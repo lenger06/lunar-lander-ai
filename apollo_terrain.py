@@ -51,14 +51,17 @@ class ApolloTerrain:
         dx = self.world_width / num_segments
         heights = []
 
-        # Initial height
-        y = 6.0 + random.uniform(-2.0, 2.0)
+        # Initial height (will also be the final height for seamless wrapping)
+        start_height = 6.0 + random.uniform(-2.0, 2.0)
+        y = start_height
 
         # Roughness increases with difficulty
         roughness = 2.5 + self.difficulty * 0.5
 
-        # Generate varied terrain heights
-        for i in range(num_segments + 1):
+        # Generate varied terrain heights (stop one segment early to add seamless endpoint)
+        for i in range(num_segments):
+            heights.append(y)
+
             # Random step
             step = random.uniform(-roughness, roughness)
 
@@ -68,7 +71,9 @@ class ApolloTerrain:
 
             # Apply step and clamp
             y = max(2.0, min(15.0, y + step))
-            heights.append(y)
+
+        # Force the last height to match the first for seamless cylindrical wrapping
+        heights.append(start_height)
 
         # Define landing pad locations
         # Format: {"start": segment_index, "len": num_segments, "mult": score_multiplier}
@@ -104,38 +109,47 @@ class ApolloTerrain:
         body = world.CreateStaticBody(position=(0, 0))
 
         # Create edge fixtures for each segment
-        for i in range(num_segments):
-            x1, y1 = terrain_points[i]
-            x2, y2 = terrain_points[i + 1]
+        # For cylindrical world wrapping, create terrain in three copies:
+        # - Left copy at x - world_width (for objects wrapping from right)
+        # - Main copy at x (normal terrain)
+        # - Right copy at x + world_width (for objects wrapping from left)
+        for copy_offset in [-self.world_width, 0, self.world_width]:
+            for i in range(num_segments):
+                x1, y1 = terrain_points[i]
+                x2, y2 = terrain_points[i + 1]
 
-            # Check if this segment is part of a landing pad
-            pad_for_segment = None
-            for spec in pad_specs:
-                if spec["start"] <= i < spec["start"] + spec["len"]:
-                    pad_for_segment = spec
-                    break
+                # Offset x coordinates for this copy
+                x1_copy = x1 + copy_offset
+                x2_copy = x2 + copy_offset
 
-            # Create edge fixture
-            fix = body.CreateEdgeFixture(
-                vertices=[(x1, y1), (x2, y2)],
-                density=0.0,
-                friction=0.9 if pad_for_segment else 0.6,  # Pads have higher friction
-            )
+                # Check if this segment is part of a landing pad
+                pad_for_segment = None
+                for spec in pad_specs:
+                    if spec["start"] <= i < spec["start"] + spec["len"]:
+                        pad_for_segment = spec
+                        break
 
-            # Tag fixtures with metadata
-            if pad_for_segment:
-                pad_start = pad_for_segment["start"]
-                pad_len = pad_for_segment["len"]
-                pad_x1 = terrain_points[pad_start][0]
-                pad_x2 = terrain_points[pad_start + pad_len][0]
-                pad_center_x = (pad_x1 + pad_x2) / 2.0
-                fix.userData = {
-                    "type": "pad",
-                    "mult": pad_for_segment["mult"],
-                    "center_x": pad_center_x
-                }
-            else:
-                fix.userData = {"type": "terrain"}
+                # Create edge fixture
+                fix = body.CreateEdgeFixture(
+                    vertices=[(x1_copy, y1), (x2_copy, y2)],
+                    density=0.0,
+                    friction=0.9 if pad_for_segment else 0.6,  # Pads have higher friction
+                )
+
+                # Tag fixtures with metadata
+                if pad_for_segment:
+                    pad_start = pad_for_segment["start"]
+                    pad_len = pad_for_segment["len"]
+                    pad_x1 = terrain_points[pad_start][0] + copy_offset
+                    pad_x2 = terrain_points[pad_start + pad_len][0] + copy_offset
+                    pad_center_x = (pad_x1 + pad_x2) / 2.0
+                    fix.userData = {
+                        "type": "pad",
+                        "mult": pad_for_segment["mult"],
+                        "center_x": pad_center_x
+                    }
+                else:
+                    fix.userData = {"type": "terrain"}
 
         # Build pads_info for return
         pads_info = []

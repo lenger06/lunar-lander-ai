@@ -217,11 +217,11 @@ class ApolloHUD:
         if mode == "DESCENT":
             help_text = (
                 "UP/DOWN=throttle  ,/.=gimbal  /=center  "
-                "LEFT/RIGHT=RCS X  W/S=RCS Y  Q/E=RCS roll  SPACE=separate  ESC=quit"
+                "LEFT/RIGHT=RCS X  W/S=RCS Y  Q/E=RCS roll  SPACE=separate  BACKSPACE=reset  ESC=quit"
             )
         else:
             help_text = (
-                "UP=ascent pulse  LEFT/RIGHT=RCS X  W/S=RCS Y  Q/E=RCS roll  ESC=quit"
+                "UP=ascent pulse  LEFT/RIGHT=RCS X  W/S=RCS Y  Q/E=RCS roll  BACKSPACE=reset  ESC=quit"
             )
 
         text = self.font_small.render(help_text, True, self.color_gray)

@@ -131,6 +131,7 @@ class ApolloLander:
             angle=0.0,
             linearDamping=0.2,
             angularDamping=0.4,
+            bullet=True,  # Enable continuous collision detection to prevent tunneling
         )
 
         data = {
@@ -252,6 +253,7 @@ class ApolloLander:
             angle=0.0,
             linearDamping=0.1,
             angularDamping=0.25,
+            bullet=True,  # Enable continuous collision detection to prevent tunneling
         )
 
         h = 1.5 * s
