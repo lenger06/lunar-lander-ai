@@ -79,9 +79,9 @@ class ApolloTerrain:
         # Format: {"start": segment_index, "len": num_segments, "mult": score_multiplier}
         base_pad_specs = self._generate_pad_specs(num_segments)
 
-        # Ensure minimum pad width for Apollo lander (needs ~5m)
-        min_pad_width_m = 5.0
-        min_pad_segments = max(2, int(min_pad_width_m / dx))
+        # Ensure minimum pad width for Apollo lander (landing gear spans ~5.6m, need margin)
+        min_pad_width_m = 8.0  # Increased from 5.0 to give comfortable landing margin
+        min_pad_segments = max(3, int(min_pad_width_m / dx))
 
         pad_specs = []
         for spec in base_pad_specs:
@@ -176,28 +176,28 @@ class ApolloTerrain:
         Higher mult = harder landing, higher score
         """
         if self.difficulty == 1:
-            # Easy: 3 pads, mostly large and easy to hit
+            # Easy: 3 pads, all large and easy to land on
             return [
-                {"start": int(num_segments * 0.15), "len": 5, "mult": 2},  # Large easy pad
-                {"start": int(num_segments * 0.50), "len": 4, "mult": 3},  # Medium pad
-                {"start": int(num_segments * 0.80), "len": 3, "mult": 4},  # Smaller pad
+                {"start": int(num_segments * 0.15), "len": 8, "mult": 2},  # Large easy pad
+                {"start": int(num_segments * 0.50), "len": 7, "mult": 3},  # Medium pad
+                {"start": int(num_segments * 0.80), "len": 6, "mult": 4},  # Smaller pad
             ]
         elif self.difficulty == 2:
-            # Medium: 4 pads, varied sizes
+            # Medium: 4 pads, varied sizes but all landable
             return [
-                {"start": int(num_segments * 0.12), "len": 4, "mult": 2},
-                {"start": int(num_segments * 0.35), "len": 3, "mult": 4},
-                {"start": int(num_segments * 0.60), "len": 4, "mult": 3},
-                {"start": int(num_segments * 0.85), "len": 2, "mult": 5},  # Small, hard
+                {"start": int(num_segments * 0.12), "len": 7, "mult": 2},
+                {"start": int(num_segments * 0.35), "len": 5, "mult": 4},
+                {"start": int(num_segments * 0.60), "len": 6, "mult": 3},
+                {"start": int(num_segments * 0.85), "len": 4, "mult": 5},
             ]
         else:  # difficulty >= 3
-            # Hard: 5 pads, mostly small and challenging (like Atari hard mode)
+            # Hard: 5 pads, smaller but still landable
             return [
-                {"start": int(num_segments * 0.10), "len": 3, "mult": 3},
-                {"start": int(num_segments * 0.28), "len": 2, "mult": 5},  # Small
-                {"start": int(num_segments * 0.50), "len": 4, "mult": 2},  # One easier pad
-                {"start": int(num_segments * 0.70), "len": 2, "mult": 6},  # Very small
-                {"start": int(num_segments * 0.90), "len": 2, "mult": 5},
+                {"start": int(num_segments * 0.10), "len": 5, "mult": 3},
+                {"start": int(num_segments * 0.28), "len": 4, "mult": 5},
+                {"start": int(num_segments * 0.50), "len": 6, "mult": 2},  # One easier pad
+                {"start": int(num_segments * 0.70), "len": 4, "mult": 6},
+                {"start": int(num_segments * 0.90), "len": 4, "mult": 5},
             ]
 
 
@@ -332,9 +332,9 @@ def get_pad_difficulty_color(mult):
         return (100, 255, 100)  # Green - easy
 
 
-def draw_terrain_pygame(surface, terrain_points, pads_info, cam_x, ppm, screen_width, screen_height, cam_y=0.0):
+def draw_terrain_pygame(surface, terrain_points, pads_info, cam_x, ppm, screen_width, screen_height, cam_y=0.0, world_width=None):
     """
-    Draw terrain and landing pads using pygame.
+    Draw terrain and landing pads using pygame with cylindrical wrapping.
 
     Args:
         surface: Pygame surface
@@ -344,6 +344,7 @@ def draw_terrain_pygame(surface, terrain_points, pads_info, cam_x, ppm, screen_w
         ppm: Pixels per meter
         screen_width, screen_height: Screen dimensions
         cam_y: Camera Y position (for vertical scrolling)
+        world_width: World width for cylindrical wrapping (optional)
     """
     import pygame
 
@@ -352,31 +353,85 @@ def draw_terrain_pygame(surface, terrain_points, pads_info, cam_x, ppm, screen_w
         sy = screen_height / 2 - (pos[1] - cam_y) * ppm  # Camera-centered Y
         return int(sx), int(sy)
 
-    # Draw terrain lines
-    if len(terrain_points) > 1:
+    # Draw terrain with cylindrical wrapping
+    if len(terrain_points) > 1 and world_width:
+        # Draw terrain in 3 panels (left, center, right) for seamless wrapping
+        for panel_offset in [-world_width, 0, world_width]:
+            panel_pts = [(x + panel_offset, y) for x, y in terrain_points]
+            screen_pts = [world_to_screen(p) for p in panel_pts]
+
+            # Filter to visible X range
+            visible_pts = [pt for pt in screen_pts if -100 <= pt[0] <= screen_width + 100]
+
+            if len(visible_pts) > 1:
+                # First draw filled polygon from terrain to bottom of screen (opaque ground)
+                # Create polygon: terrain line + bottom edge
+                polygon_pts = list(visible_pts)
+                # Add bottom-right corner
+                polygon_pts.append((visible_pts[-1][0], screen_height + 100))
+                # Add bottom-left corner
+                polygon_pts.append((visible_pts[0][0], screen_height + 100))
+                # Draw filled polygon (dark gray ground)
+                pygame.draw.polygon(surface, (40, 40, 40), polygon_pts)
+
+                # Then draw terrain outline on top
+                pygame.draw.lines(surface, (200, 200, 200), False, visible_pts, 2)
+    elif len(terrain_points) > 1:
+        # Fallback: no wrapping
         screen_pts = [world_to_screen(p) for p in terrain_points]
-        # Filter out off-screen points for performance
         visible_pts = [pt for pt in screen_pts if -100 <= pt[0] <= screen_width + 100]
+
         if len(visible_pts) > 1:
+            # Draw filled polygon
+            polygon_pts = list(visible_pts)
+            polygon_pts.append((visible_pts[-1][0], screen_height + 100))
+            polygon_pts.append((visible_pts[0][0], screen_height + 100))
+            pygame.draw.polygon(surface, (40, 40, 40), polygon_pts)
+
+            # Draw terrain outline
             pygame.draw.lines(surface, (200, 200, 200), False, visible_pts, 2)
 
-    # Draw landing pads with color-coding by difficulty
-    for pad in pads_info:
-        p1 = world_to_screen((pad['x1'], pad['y']))
-        p2 = world_to_screen((pad['x2'], pad['y']))
+    # Draw landing pads with cylindrical wrapping
+    if world_width:
+        for panel_offset in [-world_width, 0, world_width]:
+            for pad in pads_info:
+                p1 = world_to_screen((pad['x1'] + panel_offset, pad['y']))
+                p2 = world_to_screen((pad['x2'] + panel_offset, pad['y']))
 
-        # Only draw if visible
-        if -100 <= p1[0] <= screen_width + 100 or -100 <= p2[0] <= screen_width + 100:
-            color = get_pad_difficulty_color(pad['mult'])
-            pygame.draw.line(surface, color, p1, p2, 6)
+                # Only draw if visible
+                if -100 <= p1[0] <= screen_width + 100 or -100 <= p2[0] <= screen_width + 100:
+                    color = get_pad_difficulty_color(pad['mult'])
+                    pygame.draw.line(surface, color, p1, p2, 6)
 
-            # Draw pad center marker
-            pad_center = ((pad['x1'] + pad['x2']) / 2.0, pad['y'])
-            pc_screen = world_to_screen(pad_center)
-            pygame.draw.circle(surface, color, pc_screen, 8)
+                    # Draw pad center marker
+                    pad_center = ((pad['x1'] + pad['x2']) / 2.0 + panel_offset, pad['y'])
+                    pc_screen = world_to_screen(pad_center)
+                    if -100 <= pc_screen[0] <= screen_width + 100:
+                        pygame.draw.circle(surface, color, pc_screen, 8)
 
-            # Draw multiplier text
-            import pygame.font
-            font = pygame.font.SysFont("Arial", 14, bold=True)
-            mult_text = font.render(f"x{pad['mult']}", True, (255, 255, 255))
-            surface.blit(mult_text, (pc_screen[0] - 10, pc_screen[1] - 25))
+                        # Draw multiplier text
+                        import pygame.font
+                        font = pygame.font.SysFont("Arial", 14, bold=True)
+                        mult_text = font.render(f"x{pad['mult']}", True, (255, 255, 255))
+                        surface.blit(mult_text, (pc_screen[0] - 10, pc_screen[1] - 25))
+    else:
+        # Fallback: no wrapping
+        for pad in pads_info:
+            p1 = world_to_screen((pad['x1'], pad['y']))
+            p2 = world_to_screen((pad['x2'], pad['y']))
+
+            # Only draw if visible
+            if -100 <= p1[0] <= screen_width + 100 or -100 <= p2[0] <= screen_width + 100:
+                color = get_pad_difficulty_color(pad['mult'])
+                pygame.draw.line(surface, color, p1, p2, 6)
+
+                # Draw pad center marker
+                pad_center = ((pad['x1'] + pad['x2']) / 2.0, pad['y'])
+                pc_screen = world_to_screen(pad_center)
+                pygame.draw.circle(surface, color, pc_screen, 8)
+
+                # Draw multiplier text
+                import pygame.font
+                font = pygame.font.SysFont("Arial", 14, bold=True)
+                mult_text = font.render(f"x{pad['mult']}", True, (255, 255, 255))
+                surface.blit(mult_text, (pc_screen[0] - 10, pc_screen[1] - 25))

@@ -27,15 +27,17 @@ PPM = 22.0  # pixels per meter (for rendering)
 DESCENT_MAIN_THRUST_FACTOR = 4.35
 ASCENT_MAIN_THRUST_FACTOR  = 3.25
 
-# Real-world masses (kg)
-REAL_DESCENT_MASS_KG = 10246.0
-REAL_ASCENT_MASS_KG = 4819.0
+# Real-world masses (kg) - includes fuel at full capacity
+# Descent: 2,034 kg dry + 8,200 kg fuel = 10,234 kg total
+# Ascent: 2,445 kg dry + 2,353 kg fuel = 4,798 kg total
+REAL_DESCENT_MASS_KG = 10234.0  # Full mass with fuel
+REAL_ASCENT_MASS_KG = 4798.0    # Full mass with fuel
 MASS_SCALE = 100.0  # 100 kg → 1 Box2D mass unit
 
-# Real Apollo LM RCS: 445 N per thruster
-# Ascent mass: 4,819 kg → 445 / 4,819 = 0.0923 m/s² acceleration per thruster
-REAL_LM_RCS_THRUST_N = 445.0  # Newtons per thruster
-RCS_THRUST_FACTOR = REAL_LM_RCS_THRUST_N / REAL_ASCENT_MASS_KG  # 0.0923 m/s²
+# Real Apollo LM RCS: 445 N per thruster (real specification)
+# Ascent mass: 4,798 kg → 445 / 4,798 = 0.0927 m/s² acceleration per thruster
+REAL_LM_RCS_THRUST_N = 445.0  # Newtons per thruster (real Apollo spec)
+RCS_THRUST_FACTOR = REAL_LM_RCS_THRUST_N / REAL_ASCENT_MASS_KG  # 0.0927 m/s²
 
 # RCS pod geometry (local offsets, scaled by ascent scale)
 RCS_OFFSET_X = 2.1
@@ -665,8 +667,13 @@ def draw_thrusters(
     screen_width=1024,
     screen_height=768,
     cam_y=0.0,
+    throttle=1.0,
 ):
-    """Draw flames for main engine and RCS thrusters."""
+    """Draw flames for main engine and RCS thrusters.
+
+    Args:
+        throttle: Throttle level (0.0 to 1.0) that scales flame length
+    """
     user_data = getattr(body, "userData", {}) or {}
     scale = user_data.get("scale", 1.0)
 
@@ -678,8 +685,8 @@ def draw_thrusters(
                 surface, body,
                 base_local=base_local,
                 dir_local=b2Vec2(0.0, -1.0),
-                length=0.9,
-                width=0.5,
+                length=0.9 * throttle,
+                width=0.5 * throttle,
                 cam_x=cam_x,
                 screen_width=screen_width,
                 screen_height=screen_height,
@@ -688,16 +695,16 @@ def draw_thrusters(
         else:
             if user_data.get("type") == "descent" and "bell_base_local" in user_data:
                 base_local = user_data["bell_base_local"]
-                length = 1.2
-                width = 0.6
+                length = 1.2 * throttle
+                width = 0.6 * throttle
 
                 rad = math.radians(gimbal_angle_deg)
                 dir_local = b2Vec2(-math.sin(rad), -math.cos(rad))
             else:
                 offset = 2.0 if user_data.get("type") == "descent" else 1.3
                 base_local = b2Vec2(0.0, -offset)
-                length = 1.2 if not is_ascent else 0.9
-                width = 0.6
+                length = (1.2 if not is_ascent else 0.9) * throttle
+                width = 0.6 * throttle
                 dir_local = b2Vec2(0.0, -1.0)
 
             _draw_flame_triangle(
@@ -741,13 +748,17 @@ def draw_thrusters(
             base = center + b2Vec2(0.0, -rcs_half_h - noz_len)
             direction = b2Vec2(0.0, -1.0)
         elif thruster_name == "sl":
+            # Left pod side thruster: flame goes LEFT (outward from spacecraft)
+            # Nozzle on the LEFT side of the left pod, flame shoots LEFT
             center = b2Vec2(-rcs_center_offset_x, rcs_center_y)
-            base = center + b2Vec2(-rcs_half_w - noz_len, 0.0)
-            direction = b2Vec2(-1.0, 0.0)
+            base = center + b2Vec2(-rcs_half_w - noz_len, 0.0)  # Nozzle on LEFT side of left pod
+            direction = b2Vec2(-1.0, 0.0)  # Flame goes LEFT (outward)
         elif thruster_name == "sr":
+            # Right pod side thruster: flame goes RIGHT (outward from spacecraft)
+            # Nozzle on the RIGHT side of the right pod, flame shoots RIGHT
             center = b2Vec2(rcs_center_offset_x, rcs_center_y)
-            base = center + b2Vec2(rcs_half_w + noz_len, 0.0)
-            direction = b2Vec2(1.0, 0.0)
+            base = center + b2Vec2(rcs_half_w + noz_len, 0.0)  # Nozzle on RIGHT side of right pod
+            direction = b2Vec2(1.0, 0.0)  # Flame goes RIGHT (outward)
         else:
             base = b2Vec2(0.0, 0.0)
             direction = b2Vec2(0.0, 1.0)

@@ -658,6 +658,58 @@ def main():
                 else:
                     asc_br = True
 
+            # A = coordinated left translation (right side + right down + left up)
+            if keys[pygame.K_a] and controls_enabled:
+                # Fire right side thruster (flame goes right, pushes craft left)
+                r_side_pos = b2Vec2(rcs_x, rcs_y)
+                apply_thruster(rcs_body, r_side_pos, b2Vec2(-1.0, 0.0))
+                if game_state.jettisoned:
+                    csm_sr = True
+                else:
+                    asc_sr = True
+
+                # Fire right down thruster (flame goes down, reaction up on right side)
+                rb_pos = b2Vec2(rcs_x, rcs_y - up_off)
+                apply_thruster(rcs_body, rb_pos, b2Vec2(0.0, 1.0))
+                if game_state.jettisoned:
+                    csm_br = True
+                else:
+                    asc_br = True
+
+                # Fire left up thruster (flame goes up, reaction down on left side)
+                lt_pos = b2Vec2(-rcs_x, rcs_y + up_off)
+                apply_thruster(rcs_body, lt_pos, b2Vec2(0.0, -1.0))
+                if game_state.jettisoned:
+                    csm_tl = True
+                else:
+                    asc_tl = True
+
+            # D = coordinated right translation (left side + left down + right up)
+            if keys[pygame.K_d] and controls_enabled:
+                # Fire left side thruster (flame goes left, pushes craft right)
+                l_side_pos = b2Vec2(-rcs_x, rcs_y)
+                apply_thruster(rcs_body, l_side_pos, b2Vec2(1.0, 0.0))
+                if game_state.jettisoned:
+                    csm_sl = True
+                else:
+                    asc_sl = True
+
+                # Fire left down thruster (flame goes down, reaction up on left side)
+                lb_pos = b2Vec2(-rcs_x, rcs_y - up_off)
+                apply_thruster(rcs_body, lb_pos, b2Vec2(0.0, 1.0))
+                if game_state.jettisoned:
+                    csm_bl = True
+                else:
+                    asc_bl = True
+
+                # Fire right up thruster (flame goes up, reaction down on right side)
+                rt_pos = b2Vec2(rcs_x, rcs_y + up_off)
+                apply_thruster(rcs_body, rt_pos, b2Vec2(0.0, -1.0))
+                if game_state.jettisoned:
+                    csm_tr = True
+                else:
+                    asc_tr = True
+
             # Consume RCS fuel
             if active_rcs_count > 0:
                 fuel_to_use = ascent_fuel if ascent_freed else descent_fuel

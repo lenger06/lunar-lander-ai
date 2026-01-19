@@ -1,0 +1,886 @@
+"""
+Apollo Lunar Lander Game with AI Autopilot Toggle
+A 3-screen scrolling lunar lander game with:
+- AI autopilot mode using trained Double DQN agent
+- Toggle between AI and manual control with 'A' key
+- Procedurally generated terrain with multiple landing pads
+- Fuel management (descent and ascent stages)
+- Scoring system based on pad difficulty and fuel efficiency
+- Realistic Apollo LM physics and controls
+- Camera scrolling to follow the lander
+"""
+
+import math
+import pygame
+import random
+import sys
+import numpy as np
+import torch
+from Box2D import b2World, b2PolygonShape, b2Vec2
+from apollo_terrain import (
+    ApolloTerrain,
+    is_point_on_pad,
+    get_terrain_height_at,
+    draw_terrain_pygame,
+)
+from apollolander import (
+    ApolloLander,
+    draw_body,
+    draw_rcs_pods,
+    draw_thrusters,
+    world_to_screen,
+    PPM,
+    RCS_THRUST_FACTOR,
+    RCS_OFFSET_X,
+    RCS_OFFSET_Y,
+    RCS_OFFSET_UP,
+    MAX_GIMBAL_DEG,
+    MASS_SCALE,
+)
+from apollo_hud import ApolloHUD
+from apollocsm import ApolloCSM
+
+# Try to import AI agent
+AI_AVAILABLE = False
+try:
+    from double_dqn_agent import DoubleDQNAgent
+    AI_AVAILABLE = True
+    print("[OK] AI agent loaded successfully")
+except ImportError:
+    print("[!] AI agent not found - manual mode only")
+
+# -------------------------------------------------
+# Config
+# -------------------------------------------------
+SCREEN_WIDTH, SCREEN_HEIGHT = 1600, 1000
+TARGET_FPS = 60
+TIME_STEP = 1.0 / TARGET_FPS
+
+# Planet properties
+PLANET_PROPERTIES = {
+    "mercury":  {"gravity": 3.7,   "linear_damping": 0.0,  "angular_damping": 0.0,  "diameter": 4879,  "orbit_alt": 130},
+    "venus":    {"gravity": 8.87,  "linear_damping": 0.35, "angular_damping": 0.4,  "diameter": 12104, "orbit_alt": 300},
+    "earth":    {"gravity": 9.81,  "linear_damping": 0.25, "angular_damping": 0.3,  "diameter": 12742, "orbit_alt": 350},
+    "luna":     {"gravity": 1.62,  "linear_damping": 0.0,  "angular_damping": 0.0,  "diameter": 3475,  "orbit_alt": 100},
+    "mars":     {"gravity": 3.71,  "linear_damping": 0.05, "angular_damping": 0.15, "diameter": 6779,  "orbit_alt": 180},
+    "jupiter":  {"gravity": 24.79, "linear_damping": 0.4,  "angular_damping": 0.5,  "diameter": 139820, "orbit_alt": 4200},
+    "saturn":   {"gravity": 10.44, "linear_damping": 0.3,  "angular_damping": 0.4,  "diameter": 116460, "orbit_alt": 3500},
+    "uranus":   {"gravity": 8.69,  "linear_damping": 0.25, "angular_damping": 0.3,  "diameter": 50724, "orbit_alt": 1500},
+    "neptune":  {"gravity": 11.15, "linear_damping": 0.3,  "angular_damping": 0.35, "diameter": 49244, "orbit_alt": 1500},
+}
+
+# Parse command-line arguments
+SELECTED_PLANET = "luna"
+if len(sys.argv) > 1:
+    planet_arg = sys.argv[1].lower()
+    if planet_arg in PLANET_PROPERTIES:
+        SELECTED_PLANET = planet_arg
+    else:
+        print(f"Unknown planet '{sys.argv[1]}'. Available planets:")
+        for planet in PLANET_PROPERTIES.keys():
+            print(f"  - {planet}")
+        print(f"Using default: {SELECTED_PLANET}")
+
+# Get planet properties
+PLANET = PLANET_PROPERTIES[SELECTED_PLANET]
+LUNAR_GRAVITY = -PLANET["gravity"]
+LINEAR_DAMPING = PLANET["linear_damping"]
+ANGULAR_DAMPING = PLANET["angular_damping"]
+
+# Calculate thrust factors
+DESCENT_THRUST_FACTOR = PLANET["gravity"] * 2.71
+ASCENT_THRUST_FACTOR = PLANET["gravity"] * 2.0
+
+print(f"Playing on {SELECTED_PLANET.upper()}")
+print(f"   Gravity: {PLANET['gravity']} m/s²")
+print(f"   Descent thrust: {DESCENT_THRUST_FACTOR:.2f}x mass")
+print(f"   Ascent thrust: {ASCENT_THRUST_FACTOR:.2f}x mass")
+print(f"   Atmosphere: {'None' if LINEAR_DAMPING == 0.0 else f'Linear damping {LINEAR_DAMPING}, Angular damping {ANGULAR_DAMPING}'}")
+
+# Game world size
+SCALE_FACTOR = 1000.0
+PLANET_DIAMETER_METERS = PLANET["diameter"] * 1000.0 / SCALE_FACTOR
+ORBITAL_ALTITUDE_METERS = PLANET["orbit_alt"] * 1000.0 / SCALE_FACTOR
+
+SCREEN_WIDTH_METERS = SCREEN_WIDTH / PPM
+WORLD_SCREENS = PLANET_DIAMETER_METERS / SCREEN_WIDTH_METERS
+WORLD_WIDTH = SCREEN_WIDTH_METERS * max(3, int(WORLD_SCREENS))
+
+# -------------------------------------------------
+# Game State
+# -------------------------------------------------
+class GameState:
+    def __init__(self):
+        self.score = 0
+        self.landed = False
+        self.crashed = False
+        self.docked = False
+        self.game_over = False
+        self.stage = "descent"  # "descent", "surface", "ascent", "orbit"
+
+        # AI autopilot state
+        self.ai_enabled = False
+        self.ai_agent = None
+
+    def reset(self):
+        self.score = 0
+        self.landed = False
+        self.crashed = False
+        self.docked = False
+        self.game_over = False
+        self.stage = "descent"
+        # Keep AI state when resetting
+
+def load_ai_agent(model_path='lunarlander_double_dqn.pth'):
+    """Load the trained AI agent."""
+    if not AI_AVAILABLE:
+        return None
+
+    try:
+        agent = DoubleDQNAgent(state_size=8, action_size=4, seed=0)
+        agent.load(model_path)
+        print(f"[OK] AI agent loaded from {model_path}")
+        return agent
+    except Exception as e:
+        print(f"[!] Failed to load AI agent: {e}")
+        return None
+
+def get_ai_action(agent, state):
+    """Get action from AI agent given current state."""
+    if agent is None:
+        return 0  # No operation
+
+    try:
+        # Convert state to numpy array if needed
+        if not isinstance(state, np.ndarray):
+            state = np.array(state, dtype=np.float32)
+
+        # Get action from agent (epsilon=0 for pure exploitation)
+        action = agent.act(state, eps=0.0)
+        return action
+    except Exception as e:
+        print(f"[!] AI action error: {e}")
+        return 0
+
+def lander_state_to_gym_state(lander, target_x, target_y=0):
+    """
+    Convert lander physics state to Gymnasium LunarLander-v3 compatible state.
+
+    State format (8 dimensions):
+    0: x position (normalized)
+    1: y position (normalized)
+    2: x velocity (normalized)
+    3: y velocity (normalized)
+    4: angle (radians)
+    5: angular velocity
+    6: left leg contact (1 if touching ground)
+    7: right leg contact (1 if touching ground)
+    """
+    pos = lander.body.position
+    vel = lander.body.linearVelocity
+    angle = lander.body.angle
+    angular_vel = lander.body.angularVelocity
+
+    # Normalize positions relative to target
+    x_norm = (pos.x - target_x) / (WORLD_WIDTH / 2.0)
+    y_norm = pos.y / 100.0  # Approximate max height
+
+    # Normalize velocities
+    vx_norm = vel.x / 10.0
+    vy_norm = vel.y / 10.0
+
+    # Check leg contacts (simplified - would need actual contact detection)
+    left_contact = 0.0
+    right_contact = 0.0
+
+    # Create state array
+    state = np.array([
+        x_norm,
+        y_norm,
+        vx_norm,
+        vy_norm,
+        angle,
+        angular_vel,
+        left_contact,
+        right_contact
+    ], dtype=np.float32)
+
+    return state
+
+# -------------------------------------------------
+# Main Game
+# -------------------------------------------------
+def main():
+    pygame.init()
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+    pygame.display.set_caption("Apollo Lunar Lander - Atari Style [AI Toggle: A key]")
+    clock = pygame.time.Clock()
+
+    # Initialize game
+    game_state = GameState()
+    hud = ApolloHUD(SCREEN_WIDTH, SCREEN_HEIGHT)
+
+    # Try to load AI agent
+    if AI_AVAILABLE:
+        game_state.ai_agent = load_ai_agent()
+        if game_state.ai_agent is not None:
+            print("\n" + "="*60)
+            print("AI AUTOPILOT READY")
+            print("="*60)
+            print("Press 'A' to toggle between AI and Manual control")
+            print("="*60 + "\n")
+
+    # Initialize variables
+    world = None
+    terrain_gen = None
+    terrain_body = None
+    terrain_pts = []
+    pads_info = []
+    lander = None
+    target_pad = None
+    target_pad_index = 0
+    csm = None
+    csm_altitude = 60.0
+    csm_x = 0.0
+    max_world_height = 136.4
+    spawn_x = 0.0
+    spawn_y = 0.0
+    cam_x = 0.0
+    cam_y = 0.0
+    descent_fuel = 0.0
+    ascent_fuel = 0.0
+    csm_fuel = 0.0
+    descent_throttle = 0.0
+    descent_gimbal_deg = 0.0
+    max_descent_fuel = 82.0  # Real Apollo scaled
+
+    def new_game():
+        """Initialize a new game session."""
+        nonlocal world, terrain_gen, terrain_body, terrain_pts, pads_info
+        nonlocal lander, target_pad, target_pad_index, cam_x, cam_y, csm, csm_altitude
+        nonlocal descent_fuel, ascent_fuel, csm_fuel, descent_throttle, descent_gimbal_deg
+        nonlocal csm_x, spawn_x, spawn_y, max_world_height, max_descent_fuel
+
+        game_state.reset()
+        world = b2World(gravity=(0, LUNAR_GRAVITY))
+
+        # Generate terrain
+        difficulty = 2
+        terrain_gen = ApolloTerrain(world_width_meters=WORLD_WIDTH, difficulty=difficulty)
+        terrain_body, terrain_pts, pads_info = terrain_gen.generate_terrain(world)
+
+        # Select target pad
+        target_pad_index = random.randint(0, len(pads_info) - 1)
+        target_pad = pads_info[target_pad_index]
+        target_x = (target_pad["x1"] + target_pad["x2"]) / 2.0
+
+        # Spawn lander at appropriate descent altitude
+        # Real Apollo missions started powered descent from ~15km altitude
+        # In our scaled world, spawn at a reasonable height for gameplay
+        descent_start_altitude = 50.0  # meters in game world (reasonable for descent phase)
+        spawn_x = target_x + random.uniform(-20.0, 20.0)  # Near target pad with some offset
+        spawn_y = descent_start_altitude
+        max_world_height = descent_start_altitude * 1.5
+
+        lander = ApolloLander(world, position=b2Vec2(spawn_x, spawn_y), scale=0.75)
+
+        # Apply atmospheric damping to both stages (Luna has no atmosphere, so 0.0)
+        lander.descent_stage.linearDamping = LINEAR_DAMPING
+        lander.descent_stage.angularDamping = ANGULAR_DAMPING
+        lander.ascent_stage.linearDamping = LINEAR_DAMPING
+        lander.ascent_stage.angularDamping = ANGULAR_DAMPING
+
+        # Give lander some initial velocity (descending with horizontal component)
+        # Real Apollo had ~1.5 m/s horizontal, ~20-30 m/s vertical descent at powered descent start
+        initial_velocity_x = random.uniform(-3.0, 3.0)  # Horizontal drift
+        initial_velocity_y = random.uniform(-5.0, -2.0)  # Slight downward velocity
+        lander.descent_stage.linearVelocity = b2Vec2(initial_velocity_x, initial_velocity_y)
+        lander.ascent_stage.linearVelocity = b2Vec2(initial_velocity_x, initial_velocity_y)
+
+        csm = None  # CSM disabled for now
+        csm_fuel = 0.0
+
+        # Double the fuel for better gameplay
+        max_descent_fuel = 2 * 8200.0 / 100.0  # 164.0 units (doubled from real Apollo)
+        descent_fuel = max_descent_fuel
+        ascent_fuel = 800.0
+        descent_throttle = 0.6  # Start with 60% throttle (should hover at ~1.63x gravity force)
+        descent_gimbal_deg = 0.0
+
+        cam_x = lander.ascent_stage.position.x
+        cam_y = lander.ascent_stage.position.y
+
+    # Start new game
+    new_game()
+
+    # Main game loop
+    running = True
+    while running:
+        dt = clock.tick(TARGET_FPS) / 1000.0
+
+        # Event handling
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+            elif event.type == pygame.KEYDOWN:
+                # ESC: Quit
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+
+                # R: Reset game
+                elif event.key == pygame.K_r:
+                    new_game()
+
+                # A: Toggle AI autopilot
+                elif event.key == pygame.K_a:
+                    if game_state.ai_agent is not None:
+                        game_state.ai_enabled = not game_state.ai_enabled
+                        mode = "ENABLED" if game_state.ai_enabled else "DISABLED"
+                        print(f"\n{'='*60}")
+                        print(f"AI AUTOPILOT {mode}")
+                        print(f"{'='*60}\n")
+                    else:
+                        print("[!] AI agent not available")
+
+                # Throttle control (5% per key press)
+                elif event.key == pygame.K_KP8 or event.key == pygame.K_UP:
+                    descent_throttle = min(1.0, descent_throttle + 0.05)
+                elif event.key == pygame.K_KP2 or event.key == pygame.K_DOWN:
+                    descent_throttle = max(0.0, descent_throttle - 0.05)
+
+                # Gimbal control (1 degree per key press, max 6 degrees)
+                elif event.key == pygame.K_COMMA:
+                    descent_gimbal_deg = max(-MAX_GIMBAL_DEG, descent_gimbal_deg - 1.0)
+                elif event.key == pygame.K_PERIOD:
+                    descent_gimbal_deg = min(MAX_GIMBAL_DEG, descent_gimbal_deg + 1.0)
+                elif event.key == pygame.K_SLASH:
+                    descent_gimbal_deg = 0.0
+
+        # Get controls (manual or AI)
+        keys = pygame.key.get_pressed()
+
+        # Initialize control inputs
+        main_thrust = False
+        # Individual RCS thruster controls
+        rcs_left_up = False
+        rcs_left_down = False
+        rcs_left_side = False
+        rcs_right_up = False
+        rcs_right_down = False
+        rcs_right_side = False
+
+        if game_state.ai_enabled and game_state.ai_agent is not None:
+            # AI CONTROL MODE
+            target_x = (target_pad["x1"] + target_pad["x2"]) / 2.0
+            state = lander_state_to_gym_state(lander, target_x)
+            action = get_ai_action(game_state.ai_agent, state)
+
+            # Map Gymnasium actions to game controls
+            # 0: do nothing
+            # 1: fire left orientation engine (rotate left)
+            # 2: fire main engine
+            # 3: fire right orientation engine (rotate right)
+            if action == 1:
+                # LEFT rotation: right pod fires sideways + down, left pod fires up
+                rcs_left_up = True
+                rcs_right_down = True
+                rcs_right_side = True
+            elif action == 2:
+                main_thrust = True
+            elif action == 3:
+                # RIGHT rotation: left pod fires sideways + down, right pod fires up
+                rcs_right_up = True
+                rcs_left_down = True
+                rcs_left_side = True
+        else:
+            # MANUAL CONTROL MODE - Numpad controls
+            main_thrust = keys[pygame.K_SPACE]
+
+            # Individual RCS thruster control (numpad)
+            rcs_left_up = keys[pygame.K_KP7] or keys[pygame.K_HOME]      # 7/Home: Left pod up thruster
+            rcs_left_side = keys[pygame.K_KP4] or keys[pygame.K_LEFT]    # 4/Left: Left pod side thruster
+            rcs_left_down = keys[pygame.K_KP1] or keys[pygame.K_END]     # 1/End: Left pod down thruster
+            rcs_right_up = keys[pygame.K_KP9] or keys[pygame.K_PAGEUP]   # 9/PgUp: Right pod up thruster
+            rcs_right_side = keys[pygame.K_KP6] or keys[pygame.K_RIGHT]  # 6/Right: Right pod side thruster
+            rcs_right_down = keys[pygame.K_KP3] or keys[pygame.K_PAGEDOWN] # 3/PgDn: Right pod down thruster
+
+            # Coordinated translation controls (Q/E for horizontal translation with attitude hold)
+            # Q = translate LEFT: right side + right down + left up
+            if keys[pygame.K_q]:
+                rcs_right_side = True
+                rcs_right_down = True
+                rcs_left_up = True
+            # E = translate RIGHT: left side + left down + right up
+            if keys[pygame.K_e]:
+                rcs_left_side = True
+                rcs_left_down = True
+                rcs_right_up = True
+
+
+        # Apply forces to lander
+        if not game_state.crashed and not game_state.landed:
+            lander_pos = lander.descent_stage.position
+            lander_angle = lander.descent_stage.angle
+
+            # Main engine thrust
+            if main_thrust and descent_fuel > 0:
+                # Calculate total lander mass (both stages welded together)
+                total_mass = lander.descent_stage.mass + lander.ascent_stage.mass
+                thrust_magnitude = DESCENT_THRUST_FACTOR * total_mass * descent_throttle
+                gimbal_rad = math.radians(descent_gimbal_deg)
+                total_angle = lander_angle + gimbal_rad
+
+                # Thrust direction: engine fires DOWN from lander, pushing lander UP
+                # In screen coords (Y-flipped), positive angle = nose tilts RIGHT visually
+                # Thrust should push opposite to where nose points (out the bottom of lander)
+                # Negate sin to correct for Y-flip in rendering
+                thrust_x = -thrust_magnitude * math.sin(total_angle)
+                thrust_y = thrust_magnitude * math.cos(total_angle)
+
+                # Apply thrust at the combined center of mass to avoid unwanted torque
+                # Calculate the combined center of mass of both stages
+                descent_mass = lander.descent_stage.mass
+                ascent_mass = lander.ascent_stage.mass
+                descent_pos = lander.descent_stage.worldCenter
+                ascent_pos = lander.ascent_stage.worldCenter
+
+                combined_com_x = (descent_mass * descent_pos.x + ascent_mass * ascent_pos.x) / total_mass
+                combined_com_y = (descent_mass * descent_pos.y + ascent_mass * ascent_pos.y) / total_mass
+                combined_com = b2Vec2(combined_com_x, combined_com_y)
+
+                # Apply force at the combined center of mass (no torque)
+                lander.descent_stage.ApplyForce((thrust_x, thrust_y), combined_com, True)
+
+                # Realistic fuel consumption: Apollo descent engine burned ~8,200kg over ~12 minutes = ~11.4 kg/s
+                # At 60 FPS, that's ~0.19 kg per frame at 100% throttle
+                # With mass scale 100, that's 0.0019 units per frame
+                fuel_burn_rate = 0.12 * descent_throttle  # Adjusted for gameplay (was 2.0, too fast)
+                descent_fuel -= fuel_burn_rate
+
+            # RCS thrusters - Individual thruster control
+            # Each pod has 3 thrusters: up, down, and sideways
+            # Real Apollo RCS: 445 N per thruster
+
+            # Get RCS pod positions from lander user data
+            user_data = getattr(lander.ascent_stage, "userData", {}) or {}
+            scale = user_data.get("scale", 1.0)
+            rcs_center_offset_x = user_data.get("rcs_center_offset_x", 2.1 * scale)
+            rcs_center_y = user_data.get("rcs_center_y", 0.0)
+
+            # Real Apollo RCS thrust: 445 N per thruster
+            # With mass scaling: force = thrust_N / MASS_SCALE (100 kg per unit)
+            rcs_thrust_per_thruster = 445.0 / 100.0  # 4.45 force units per thruster
+
+            # Pod positions
+            right_pod_pos = b2Vec2(rcs_center_offset_x, rcs_center_y)
+            left_pod_pos = b2Vec2(-rcs_center_offset_x, rcs_center_y)
+
+            # Transform to world coordinates
+            right_pod_world = lander.ascent_stage.GetWorldPoint(right_pod_pos)
+            left_pod_world = lander.ascent_stage.GetWorldPoint(left_pod_pos)
+
+            # Track how many thrusters are firing for fuel consumption
+            thrusters_firing = 0
+
+            # LEFT POD - UP THRUSTER (Numpad 7/Home)
+            # Flame goes UP, reaction force pushes craft DOWN on left side -> rotates CLOCKWISE
+            if rcs_left_up and descent_fuel > 0:
+                thrust_dir_local = b2Vec2(0.0, -1.0)  # Reaction force DOWN (flame goes UP)
+                thrust_dir_world = lander.ascent_stage.GetWorldVector(thrust_dir_local)
+                lander.ascent_stage.ApplyForce(
+                    thrust_dir_world * rcs_thrust_per_thruster,
+                    left_pod_world,
+                    True
+                )
+                thrusters_firing += 1
+
+            # LEFT POD - DOWN THRUSTER (Numpad 1/End)
+            # Flame goes DOWN, reaction force pushes craft UP on left side -> rotates COUNTER-CLOCKWISE
+            if rcs_left_down and descent_fuel > 0:
+                thrust_dir_local = b2Vec2(0.0, 1.0)  # Reaction force UP (flame goes DOWN)
+                thrust_dir_world = lander.ascent_stage.GetWorldVector(thrust_dir_local)
+                lander.ascent_stage.ApplyForce(
+                    thrust_dir_world * rcs_thrust_per_thruster,
+                    left_pod_world,
+                    True
+                )
+                thrusters_firing += 1
+
+            # LEFT POD - SIDE THRUSTER (Numpad 4/Left)
+            # Flame goes LEFT (inward), reaction force pushes craft RIGHT -> translates RIGHT
+            if rcs_left_side and descent_fuel > 0:
+                thrust_dir_local = b2Vec2(1.0, 0.0)  # Reaction force RIGHT (flame goes LEFT/inward)
+                thrust_dir_world = lander.ascent_stage.GetWorldVector(thrust_dir_local)
+                lander.ascent_stage.ApplyForce(
+                    thrust_dir_world * rcs_thrust_per_thruster,
+                    left_pod_world,
+                    True
+                )
+                thrusters_firing += 1
+
+            # RIGHT POD - UP THRUSTER (Numpad 9/PgUp)
+            # Flame goes UP, reaction force pushes craft DOWN on right side -> rotates COUNTER-CLOCKWISE
+            if rcs_right_up and descent_fuel > 0:
+                thrust_dir_local = b2Vec2(0.0, -1.0)  # Reaction force DOWN (flame goes UP)
+                thrust_dir_world = lander.ascent_stage.GetWorldVector(thrust_dir_local)
+                lander.ascent_stage.ApplyForce(
+                    thrust_dir_world * rcs_thrust_per_thruster,
+                    right_pod_world,
+                    True
+                )
+                thrusters_firing += 1
+
+            # RIGHT POD - DOWN THRUSTER (Numpad 3/PgDn)
+            # Flame goes DOWN, reaction force pushes craft UP on right side -> rotates CLOCKWISE
+            if rcs_right_down and descent_fuel > 0:
+                thrust_dir_local = b2Vec2(0.0, 1.0)  # Reaction force UP (flame goes DOWN)
+                thrust_dir_world = lander.ascent_stage.GetWorldVector(thrust_dir_local)
+                lander.ascent_stage.ApplyForce(
+                    thrust_dir_world * rcs_thrust_per_thruster,
+                    right_pod_world,
+                    True
+                )
+                thrusters_firing += 1
+
+            # RIGHT POD - SIDE THRUSTER (Numpad 6/Right)
+            # Flame goes RIGHT (inward), reaction force pushes craft LEFT -> translates LEFT
+            if rcs_right_side and descent_fuel > 0:
+                thrust_dir_local = b2Vec2(-1.0, 0.0)  # Reaction force LEFT (flame goes RIGHT/inward)
+                thrust_dir_world = lander.ascent_stage.GetWorldVector(thrust_dir_local)
+                lander.ascent_stage.ApplyForce(
+                    thrust_dir_world * rcs_thrust_per_thruster,
+                    right_pod_world,
+                    True
+                )
+                thrusters_firing += 1
+
+            # Fuel consumption based on number of thrusters firing
+            # Each thruster uses 0.01 fuel units per frame
+            if thrusters_firing > 0:
+                descent_fuel -= 0.01 * thrusters_firing
+
+
+        # Update physics
+        world.Step(TIME_STEP, 10, 10)
+
+        # Update camera to follow lander
+        if lander:
+            cam_x = lander.ascent_stage.position.x
+            cam_y = lander.ascent_stage.position.y
+
+        # Rendering
+        screen.fill((0, 0, 20))
+
+        # Draw terrain
+        draw_terrain_pygame(screen, terrain_pts, pads_info, cam_x, PPM, SCREEN_WIDTH, SCREEN_HEIGHT, cam_y, WORLD_WIDTH)
+
+        # Draw lander (draw ascent first, then descent on top)
+        if lander:
+            # Define colors
+            ascent_color = (200, 200, 200)  # Light gray for ascent
+            descent_color = (180, 150, 100)  # Gold for descent
+
+            # Draw ascent stage first
+            draw_body(screen, lander.ascent_stage, ascent_color, cam_x, SCREEN_WIDTH, SCREEN_HEIGHT, cam_y)
+            draw_rcs_pods(screen, lander.ascent_stage, cam_x, SCREEN_WIDTH, SCREEN_HEIGHT, cam_y)
+
+            # Draw descent stage on top
+            draw_body(screen, lander.descent_stage, descent_color, cam_x, SCREEN_WIDTH, SCREEN_HEIGHT, cam_y)
+
+            # Draw thruster flames
+            # Descent stage thrusters (only main engine)
+            draw_thrusters(
+                screen,
+                lander.descent_stage,
+                is_ascent=False,
+                main_on=main_thrust,
+                tl=False,
+                bl=False,
+                tr=False,
+                br=False,
+                sl=False,
+                sr=False,
+                gimbal_angle_deg=descent_gimbal_deg,
+                cam_x=cam_x,
+                screen_width=SCREEN_WIDTH,
+                screen_height=SCREEN_HEIGHT,
+                cam_y=cam_y,
+                throttle=descent_throttle,
+            )
+
+            # Ascent stage thrusters (RCS) - Individual thruster visualization
+            draw_thrusters(
+                screen,
+                lander.ascent_stage,
+                is_ascent=True,
+                main_on=False,  # Ascent engine not used during descent
+                tl=rcs_left_up,      # Left pod up thruster (Numpad 7/Home)
+                bl=rcs_left_down,    # Left pod down thruster (Numpad 1/End)
+                tr=rcs_right_up,     # Right pod up thruster (Numpad 9/PgUp)
+                br=rcs_right_down,   # Right pod down thruster (Numpad 3/PgDn)
+                sl=rcs_left_side,    # Left pod sideways thruster (Numpad 4/Left)
+                sr=rcs_right_side,   # Right pod sideways thruster (Numpad 6/Right)
+                gimbal_angle_deg=0.0,
+                cam_x=cam_x,
+                screen_width=SCREEN_WIDTH,
+                screen_height=SCREEN_HEIGHT,
+                cam_y=cam_y,
+            )
+
+        # Draw HUD elements
+        # Draw mini-map (top-right corner) showing terrain and landing pads
+        minimap_width = 600
+        minimap_height = 120
+        minimap_x = SCREEN_WIDTH - minimap_width - 10
+        minimap_y = 10
+        minimap_margin = 5
+
+        # Draw background
+        minimap_rect = pygame.Rect(minimap_x, minimap_y, minimap_width, minimap_height)
+        pygame.draw.rect(screen, (0, 0, 0, 180), minimap_rect)
+        pygame.draw.rect(screen, (100, 100, 100), minimap_rect, 2)
+
+        # Calculate scale factors for mini-map
+        world_height = max_world_height
+        map_inner_width = minimap_width - 2 * minimap_margin
+        map_inner_height = minimap_height - 2 * minimap_margin
+        scale_x = map_inner_width / WORLD_WIDTH
+        scale_y = map_inner_height / world_height
+
+        def world_to_minimap(world_x, world_y):
+            """Convert world coordinates to minimap screen coordinates."""
+            mx = minimap_x + minimap_margin + world_x * scale_x
+            my = minimap_y + minimap_height - minimap_margin - world_y * scale_y
+            return int(mx), int(my)
+
+        # Draw terrain on mini-map
+        if len(terrain_pts) > 0:
+            minimap_terrain_pts = [world_to_minimap(pt[0], pt[1]) for pt in terrain_pts]
+            if len(minimap_terrain_pts) > 2:
+                pygame.draw.lines(screen, (150, 150, 150), False, minimap_terrain_pts, 1)
+
+        # Draw landing pads
+        for i, pad in enumerate(pads_info):
+            pad_x1, pad_y = pad["x1"], pad["y"]
+            pad_x2 = pad["x2"]
+            mp1 = world_to_minimap(pad_x1, pad_y)
+            mp2 = world_to_minimap(pad_x2, pad_y)
+
+            # Get pad difficulty color based on multiplier
+            mult = pad["mult"]
+            if mult == 1:
+                pad_color = (100, 255, 100)  # Easy - Green
+            elif mult == 2:
+                pad_color = (255, 255, 100)  # Medium - Yellow
+            else:
+                pad_color = (255, 100, 100)  # Hard - Red
+
+            # Highlight target pad
+            if i == target_pad_index:
+                thickness = 3
+                # Draw pulsing indicator
+                if not game_state.crashed and not game_state.landed:
+                    pulse = abs(math.sin(pygame.time.get_ticks() * 0.005)) * 0.5 + 0.5
+                    pad_center_x = (pad_x1 + pad_x2) / 2.0
+                    center_minimap = world_to_minimap(pad_center_x, pad_y)
+                    pulse_radius1 = int(3 + pulse * 3)
+                    pulse_radius2 = int(5 + pulse * 3)
+                    pygame.draw.circle(screen, pad_color, center_minimap, pulse_radius1, 1)
+                    pygame.draw.circle(screen, pad_color, center_minimap, pulse_radius2, 1)
+            else:
+                thickness = 2
+
+            # Draw pad line
+            pygame.draw.line(screen, pad_color, mp1, mp2, thickness)
+            pygame.draw.circle(screen, pad_color, mp1, 2)
+            pygame.draw.circle(screen, pad_color, mp2, 2)
+
+        # Draw lander on mini-map
+        if lander:
+            lander_minimap = world_to_minimap(lander.ascent_stage.position.x, lander.ascent_stage.position.y)
+            if game_state.crashed:
+                lander_color = (255, 0, 0)  # Red when crashed
+            elif game_state.landed:
+                lander_color = (100, 255, 100)  # Light green when landed
+            else:
+                lander_color = (0, 255, 0)  # Green when flying
+            pygame.draw.circle(screen, lander_color, lander_minimap, 3)
+
+        # Label
+        font_mini = pygame.font.SysFont("Arial", 10, bold=True)
+        minimap_label = font_mini.render("MAP", True, (150, 150, 150))
+        screen.blit(minimap_label, (minimap_x + 5, minimap_y + 3))
+
+        # Draw basic telemetry (top-left)
+        font_hud = pygame.font.SysFont("consolas", 18)
+        if lander:
+            alt = lander.ascent_stage.position.y
+            vel = lander.ascent_stage.linearVelocity
+            angle_deg = math.degrees(lander.ascent_stage.angle)
+
+            hud_x, hud_y = 10, 10
+            line_height = 25
+
+            # Altitude
+            alt_color = (100, 255, 100) if alt > 15.0 else (255, 165, 0) if alt > 5.0 else (255, 100, 100)
+            text = font_hud.render(f"ALT:  {alt:6.1f} m", True, alt_color)
+            screen.blit(text, (hud_x, hud_y))
+            hud_y += line_height
+
+            # Vertical speed
+            vv_color = (255, 255, 255) if vel.y > -2.0 else (255, 165, 0) if vel.y > -5.0 else (255, 100, 100)
+            text = font_hud.render(f"Vv:   {vel.y:+6.2f} m/s", True, vv_color)
+            screen.blit(text, (hud_x, hud_y))
+            hud_y += line_height
+
+            # Horizontal speed
+            text = font_hud.render(f"Vh:   {vel.x:+6.2f} m/s", True, (255, 255, 255))
+            screen.blit(text, (hud_x, hud_y))
+            hud_y += line_height
+
+            # Angle
+            angle_color = (100, 255, 100) if abs(angle_deg) < 20 else (255, 165, 0) if abs(angle_deg) < 45 else (255, 100, 100)
+            text = font_hud.render(f"ANG:  {angle_deg:+6.1f}°", True, angle_color)
+            screen.blit(text, (hud_x, hud_y))
+            hud_y += line_height
+
+            # Fuel percentage
+            fuel_pct = (descent_fuel / max_descent_fuel) * 100 if max_descent_fuel > 0 else 0
+            fuel_color = (100, 255, 100) if fuel_pct > 50 else (255, 165, 0) if fuel_pct > 25 else (255, 100, 100)
+            text = font_hud.render(f"FUEL: {fuel_pct:5.1f}%", True, fuel_color)
+            screen.blit(text, (hud_x, hud_y))
+            hud_y += line_height
+
+            # Throttle
+            text = font_hud.render(f"THR:  {descent_throttle*100:5.1f}%", True, (100, 200, 255))
+            screen.blit(text, (hud_x, hud_y))
+            hud_y += line_height
+
+            # Gimbal angle
+            gimbal_color = (255, 255, 100) if descent_gimbal_deg != 0 else (150, 150, 150)
+            text = font_hud.render(f"GMB:  {descent_gimbal_deg:+5.1f}°", True, gimbal_color)
+            screen.blit(text, (hud_x, hud_y))
+
+        # Draw fuel gauge (vertical bar on left side)
+        gauge_x = 10
+        gauge_y = SCREEN_HEIGHT - 210
+        gauge_width = 30
+        gauge_height = 150
+
+        # Background
+        pygame.draw.rect(screen, (40, 40, 40), (gauge_x, gauge_y, gauge_width, gauge_height), 0)
+        pygame.draw.rect(screen, (255, 255, 255), (gauge_x, gauge_y, gauge_width, gauge_height), 2)
+
+        # Fuel level
+        if lander:
+            fuel_ratio = max(0.0, min(1.0, descent_fuel / max_descent_fuel))
+            fuel_bar_height = int(gauge_height * fuel_ratio)
+            fuel_bar_y = gauge_y + gauge_height - fuel_bar_height
+
+            # Color based on fuel level
+            if fuel_ratio > 0.5:
+                gauge_color = (100, 255, 100)
+            elif fuel_ratio > 0.25:
+                gauge_color = (255, 165, 0)
+            else:
+                gauge_color = (255, 100, 100)
+
+            if fuel_bar_height > 0:
+                pygame.draw.rect(screen, gauge_color, (gauge_x + 2, fuel_bar_y, gauge_width - 4, fuel_bar_height), 0)
+
+        # Label
+        font_small = pygame.font.SysFont("consolas", 12)
+        fuel_label = font_small.render("FUEL", True, (255, 255, 255))
+        screen.blit(fuel_label, (gauge_x + 2, gauge_y + gauge_height + 5))
+
+        # Draw attitude indicator (circular dial showing angle)
+        if lander:
+            att_center_x = 80
+            att_center_y = SCREEN_HEIGHT - 80
+            att_radius = 50
+
+            # Get current angle
+            current_angle_deg = math.degrees(lander.ascent_stage.angle)
+            current_angle_rad = lander.ascent_stage.angle
+
+            # Background circle
+            pygame.draw.circle(screen, (30, 30, 30), (att_center_x, att_center_y), att_radius, 0)
+            pygame.draw.circle(screen, (100, 100, 100), (att_center_x, att_center_y), att_radius, 2)
+
+            # Draw tick marks every 15 degrees
+            for tick_deg in range(-90, 91, 15):
+                tick_rad = math.radians(tick_deg)
+                inner_r = att_radius - 8 if tick_deg % 45 == 0 else att_radius - 5
+                outer_r = att_radius - 2
+
+                x1 = att_center_x + inner_r * math.sin(tick_rad)
+                y1 = att_center_y - inner_r * math.cos(tick_rad)
+                x2 = att_center_x + outer_r * math.sin(tick_rad)
+                y2 = att_center_y - outer_r * math.cos(tick_rad)
+
+                tick_color = (255, 255, 255) if tick_deg == 0 else (150, 150, 150)
+                pygame.draw.line(screen, tick_color, (x1, y1), (x2, y2), 2 if tick_deg % 45 == 0 else 1)
+
+            # Draw horizon line (fixed)
+            horizon_len = att_radius - 15
+            pygame.draw.line(screen, (0, 150, 255),
+                           (att_center_x - horizon_len, att_center_y),
+                           (att_center_x + horizon_len, att_center_y), 2)
+
+            # Draw lander indicator (rotates with lander)
+            indicator_len = att_radius - 10
+            indicator_tip_x = att_center_x + indicator_len * math.sin(current_angle_rad)
+            indicator_tip_y = att_center_y - indicator_len * math.cos(current_angle_rad)
+
+            # Color based on angle
+            if abs(current_angle_deg) < 15:
+                indicator_color = (100, 255, 100)  # Green - safe
+            elif abs(current_angle_deg) < 30:
+                indicator_color = (255, 255, 0)    # Yellow - caution
+            elif abs(current_angle_deg) < 45:
+                indicator_color = (255, 165, 0)    # Orange - warning
+            else:
+                indicator_color = (255, 100, 100)  # Red - danger
+
+            # Draw lander body indicator (triangle)
+            pygame.draw.line(screen, indicator_color,
+                           (att_center_x, att_center_y),
+                           (indicator_tip_x, indicator_tip_y), 3)
+
+            # Draw small wings
+            wing_len = 15
+            wing_angle_offset = math.pi / 2  # 90 degrees
+            left_wing_x = att_center_x + wing_len * math.sin(current_angle_rad - wing_angle_offset)
+            left_wing_y = att_center_y - wing_len * math.cos(current_angle_rad - wing_angle_offset)
+            right_wing_x = att_center_x + wing_len * math.sin(current_angle_rad + wing_angle_offset)
+            right_wing_y = att_center_y - wing_len * math.cos(current_angle_rad + wing_angle_offset)
+
+            pygame.draw.line(screen, indicator_color, (att_center_x, att_center_y), (left_wing_x, left_wing_y), 2)
+            pygame.draw.line(screen, indicator_color, (att_center_x, att_center_y), (right_wing_x, right_wing_y), 2)
+
+            # Center dot
+            pygame.draw.circle(screen, indicator_color, (att_center_x, att_center_y), 4, 0)
+
+            # Angle readout below
+            font_att = pygame.font.SysFont("consolas", 14, bold=True)
+            angle_text = font_att.render(f"{current_angle_deg:+.1f}", True, indicator_color)
+            text_rect = angle_text.get_rect(center=(att_center_x, att_center_y + att_radius + 15))
+            screen.blit(angle_text, text_rect)
+
+            # Label
+            att_label = font_small.render("ATT", True, (255, 255, 255))
+            screen.blit(att_label, (att_center_x - 10, att_center_y - att_radius - 18))
+
+        # Draw AI status indicator
+        if game_state.ai_enabled:
+            font = pygame.font.Font(None, 36)
+            ai_text = font.render("AI AUTOPILOT", True, (0, 255, 0))
+            screen.blit(ai_text, (SCREEN_WIDTH // 2 - 100, 10))
+
+        pygame.display.flip()
+
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()

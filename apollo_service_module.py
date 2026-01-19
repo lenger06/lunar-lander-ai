@@ -174,7 +174,8 @@ class ServiceModule(WorldObject):
         pod_half_h = (0.82 / 2.0) * scale
         rcs_pod_scale = 1.0 * scale  # Full scale - RCSPod now has real dimensions
 
-        pod_center_y = sm_top_y - (sm_height / 3.0)
+        # Position RCS pods approximately 1/4 of the SM length from the top (docking end)
+        pod_center_y = sm_top_y - (sm_height / 4.0)
         # Position pods flush against SM edges (no gap)
         left_center_x = self.sm_center.x - (self.sm_half_w + pod_half_w)
         right_center_x = self.sm_center.x + (self.sm_half_w + pod_half_w)

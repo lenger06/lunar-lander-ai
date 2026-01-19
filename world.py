@@ -190,6 +190,57 @@ class ApolloWorld:
         Args:
             dt: Time step in seconds
         """
+        # Apply altitude-based gravity using inverse square law
+        # Real gravitational formula: g(h) = g₀ * (R / (R + h))²
+        # where:
+        #   g₀ = surface gravity
+        #   R = planet radius
+        #   h = altitude above surface
+        #
+        # For our cylindrical world:
+        #   R = diameter / 2 (planet radius in game meters)
+        #   h = body.position.y (altitude above surface)
+
+        planet_radius = self.width / 2.0  # Use world width as diameter → radius
+        gravity_surface = abs(self.gravity)
+
+        for body in self.b2world.bodies:
+            if body.type == 2:  # Dynamic body (2 = b2_dynamicBody)
+                altitude = body.position.y
+
+                if altitude < 0:
+                    # Below surface: clamp to surface gravity
+                    body.gravityScale = 1.0
+                else:
+                    # Apply inverse square law: g(h) = g₀ * (R / (R + h))²
+                    # gravityScale = (R / (R + h))²
+                    distance_from_center = planet_radius + altitude
+                    gravity_scale = (planet_radius / distance_from_center) ** 2
+                    body.gravityScale = gravity_scale
+
+                    # For bodies in orbital regime (above 50m altitude), apply centrifugal force
+                    # to counteract gravity and enable stable circular orbits in 2D side-scrolling world
+                    if altitude >= 50.0:
+                        # Calculate horizontal velocity
+                        v_x = body.linearVelocity.x
+
+                        # Calculate gravity at this altitude
+                        gravity_at_altitude = gravity_surface * gravity_scale
+
+                        # For a circular orbit in 2D side-scrolling (gravity always points down),
+                        # we need centrifugal acceleration = v²/r pointing upward
+                        # This counteracts the downward gravity
+                        orbital_radius = distance_from_center
+                        centrifugal_accel = (v_x * v_x) / orbital_radius
+
+                        # Apply upward centrifugal force to counteract gravity
+                        # Force = mass * acceleration
+                        mass = body.mass
+                        centrifugal_force_y = mass * centrifugal_accel
+
+                        # Apply the force upward (+Y direction)
+                        body.ApplyForceToCenter(b2Vec2(0.0, centrifugal_force_y), wake=True)
+
         # Step Box2D physics
         self.b2world.Step(dt, velocityIterations=6, positionIterations=2)
 

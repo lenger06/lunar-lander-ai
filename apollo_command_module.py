@@ -10,6 +10,9 @@ import pygame
 from Box2D import b2PolygonShape, b2Vec2
 from world import WorldObject
 
+# Mass scaling constant (same as Service Module)
+CM_MASS_SCALE = 100.0  # 100 kg → 1 Box2D mass unit
+
 
 def rotate_vec(vec, angle):
     """Rotate a 2D vector by angle (radians)."""
@@ -72,11 +75,10 @@ class CommandModule(WorldObject):
             b2Vec2(0.0, self.cm_tip_y),
         ]
 
-        # Mass settings via density
+        # Mass settings via density (temporary - will rescale after fixture creation)
         # Real Apollo CM: ~5,560 kg at reentry
-        cm_area = 2.0 * cm_base_half_w * cm_height * 0.5  # triangular
         REAL_CM_MASS_KG = 5560.0
-        cm_density = REAL_CM_MASS_KG / cm_area
+        cm_density = 1.0  # Will be rescaled after fixture creation
 
         # Create CM fixture
         self.fixture = self.body.CreatePolygonFixture(
@@ -85,6 +87,9 @@ class CommandModule(WorldObject):
             friction=0.3,
             restitution=0.1,
         )
+
+        # Apply mass scaling to match real Apollo CM mass
+        self._apply_mass_scaling(self.body, REAL_CM_MASS_KG)
 
         # Docking tunnel and probe (at top of CM)
         # Real Apollo docking mechanism extends about 0.5m above CM apex
@@ -165,6 +170,19 @@ class CommandModule(WorldObject):
             {"center": b2Vec2(-rcs_x, rcs_height), "half_w": 0.12 * scale, "half_h": 0.15 * scale},
             {"center": b2Vec2(rcs_x, rcs_height), "half_w": 0.12 * scale, "half_h": 0.15 * scale},
         ]
+
+    def _apply_mass_scaling(self, body, real_mass_kg):
+        """Rescale body mass to match real Apollo Command Module mass."""
+        # CM mass is constant at 5,560 kg (unlike SM which has fuel consumption)
+        md = body.massData
+        if md.mass <= 0:
+            return
+        # Convert real mass to Box2D units using mass scale
+        target_mass = real_mass_kg / CM_MASS_SCALE
+        factor = target_mass / md.mass
+        md.mass *= factor
+        md.I *= factor
+        body.massData = md
 
     def update(self, dt):
         """Update CM physics."""
