@@ -56,6 +56,10 @@ SCREEN_WIDTH, SCREEN_HEIGHT = 1600, 1000
 TARGET_FPS = 60
 TIME_STEP = 1.0 / TARGET_FPS
 
+# Terrain and spawn settings
+TERRAIN_ROUGHNESS = 1.0  # Controls terrain bumpiness (higher = rougher)
+SPAWN_ALTITUDE = 50.0    # meters in game world (= 50 km real altitude)
+
 # Planet properties
 PLANET_PROPERTIES = {
     "mercury":  {"gravity": 3.7,   "linear_damping": 0.0,  "angular_damping": 0.0,  "diameter": 4879,  "orbit_alt": 130},
@@ -265,8 +269,7 @@ def main():
         world = b2World(gravity=(0, LUNAR_GRAVITY))
 
         # Generate terrain
-        difficulty = 2
-        terrain_gen = ApolloTerrain(world_width_meters=WORLD_WIDTH, difficulty=difficulty)
+        terrain_gen = ApolloTerrain(world_width_meters=WORLD_WIDTH, roughness=TERRAIN_ROUGHNESS)
         terrain_body, terrain_pts, pads_info = terrain_gen.generate_terrain(world)
 
         # Select target pad
@@ -274,13 +277,11 @@ def main():
         target_pad = pads_info[target_pad_index]
         target_x = (target_pad["x1"] + target_pad["x2"]) / 2.0
 
-        # Spawn lander at appropriate descent altitude
-        # Real Apollo missions started powered descent from ~15km altitude
-        # In our scaled world, spawn at a reasonable height for gameplay
-        descent_start_altitude = 50.0  # meters in game world (reasonable for descent phase)
+        # Spawn lander at configured altitude
+        # Game scale: 1 game meter = 1 real km
         spawn_x = target_x + random.uniform(-20.0, 20.0)  # Near target pad with some offset
-        spawn_y = descent_start_altitude
-        max_world_height = descent_start_altitude * 1.5
+        spawn_y = SPAWN_ALTITUDE
+        max_world_height = SPAWN_ALTITUDE * 1.5
 
         lander = ApolloLander(world, position=b2Vec2(spawn_x, spawn_y), scale=0.75)
 
@@ -300,8 +301,8 @@ def main():
         csm = None  # CSM disabled for now
         csm_fuel = 0.0
 
-        # Double the fuel for better gameplay
-        max_descent_fuel = 2 * 8200.0 / 100.0  # 164.0 units (doubled from real Apollo)
+        # Quadruple the fuel for better gameplay (4x real Apollo)
+        max_descent_fuel = 4 * 8200.0 / 100.0  # 328.0 units (4x real Apollo scaled)
         descent_fuel = max_descent_fuel
         ascent_fuel = 800.0
         descent_throttle = 0.6  # Start with 60% throttle (should hover at ~1.63x gravity force)
@@ -456,7 +457,7 @@ def main():
                 # At 60 FPS, that's ~0.19 kg per frame at 100% throttle
                 # With mass scale 100, that's 0.0019 units per frame
                 fuel_burn_rate = 0.12 * descent_throttle  # Adjusted for gameplay (was 2.0, too fast)
-                descent_fuel -= fuel_burn_rate
+                descent_fuel = max(0.0, descent_fuel - fuel_burn_rate)
 
             # RCS thrusters - Individual thruster control
             # Each pod has 3 thrusters: up, down, and sideways
@@ -558,11 +559,48 @@ def main():
             # Fuel consumption based on number of thrusters firing
             # Each thruster uses 0.01 fuel units per frame
             if thrusters_firing > 0:
-                descent_fuel -= 0.01 * thrusters_firing
+                descent_fuel = max(0.0, descent_fuel - 0.01 * thrusters_firing)
 
 
         # Update physics
         world.Step(TIME_STEP, 10, 10)
+
+        # Check landing/crash conditions
+        if lander and not game_state.crashed and not game_state.landed:
+            pos_x = lander.descent_stage.position.x
+            pos_y = lander.descent_stage.position.y
+            terrain_height = get_terrain_height_at(pos_x, terrain_pts)
+            altitude = pos_y - terrain_height
+
+            vel = lander.descent_stage.linearVelocity
+            vel_y = vel.y
+            vel_x = vel.x
+            angle_deg = math.degrees(lander.descent_stage.angle)
+
+            # Check if on target pad (body center is on or near pad)
+            on_target_pad = is_point_on_pad(pos_x, pos_y, target_pad, tolerance_x=2.5, tolerance_y=3.0)
+
+            # Landing detection - check if lander is nearly stationary on ground
+            # Body center within 3.5m of terrain (feet extended ~2.4m below body)
+            is_on_ground = altitude < 3.5
+            is_nearly_stopped = abs(vel_y) < 1.0 and abs(vel_x) < 1.0
+
+            if is_on_ground and is_nearly_stopped:
+                # Successful landing: on target pad AND reasonable angle (< 20°)
+                if on_target_pad and abs(angle_deg) < 20:
+                    game_state.landed = True
+                # Crash: bad angle (> 30°)
+                elif abs(angle_deg) > 30:
+                    game_state.crashed = True
+                # Wrong pad but gentle landing
+                elif not on_target_pad and abs(angle_deg) < 20:
+                    game_state.landed = True  # Landed but on wrong pad
+                else:
+                    game_state.crashed = True
+
+            # High-speed impact detection (crash even if not stopped)
+            elif is_on_ground and (abs(vel_y) > 3.0 or abs(vel_x) > 3.0):
+                game_state.crashed = True
 
         # Update camera to follow lander
         if lander:
@@ -630,6 +668,7 @@ def main():
 
         # Draw HUD elements
         # Draw mini-map (top-right corner) showing terrain and landing pads
+        # Cylindrical wrapping: lander is always centered, world wraps around
         minimap_width = 600
         minimap_height = 120
         minimap_x = SCREEN_WIDTH - minimap_width - 10
@@ -648,22 +687,69 @@ def main():
         scale_x = map_inner_width / WORLD_WIDTH
         scale_y = map_inner_height / world_height
 
+        # Get lander position for centering the cylindrical view
+        lander_world_x = lander.ascent_stage.position.x if lander else WORLD_WIDTH / 2.0
+
+        def wrap_x_relative(world_x):
+            """Get x position relative to lander, wrapped for cylindrical world."""
+            # Calculate offset from lander (center of minimap)
+            dx = world_x - lander_world_x
+            # Wrap to nearest representation (-WORLD_WIDTH/2 to +WORLD_WIDTH/2)
+            while dx > WORLD_WIDTH / 2.0:
+                dx -= WORLD_WIDTH
+            while dx < -WORLD_WIDTH / 2.0:
+                dx += WORLD_WIDTH
+            return dx
+
         def world_to_minimap(world_x, world_y):
-            """Convert world coordinates to minimap screen coordinates."""
-            mx = minimap_x + minimap_margin + world_x * scale_x
+            """Convert world coordinates to minimap screen coordinates (cylindrical)."""
+            # Get x relative to lander (centered)
+            rel_x = wrap_x_relative(world_x)
+            # Map to minimap: lander at center
+            mx = minimap_x + minimap_margin + map_inner_width / 2.0 + rel_x * scale_x
             my = minimap_y + minimap_height - minimap_margin - world_y * scale_y
             return int(mx), int(my)
 
-        # Draw terrain on mini-map
+        # Draw terrain on mini-map with cylindrical wrapping
         if len(terrain_pts) > 0:
-            minimap_terrain_pts = [world_to_minimap(pt[0], pt[1]) for pt in terrain_pts]
-            if len(minimap_terrain_pts) > 2:
-                pygame.draw.lines(screen, (150, 150, 150), False, minimap_terrain_pts, 1)
+            # Build terrain segments, breaking when they wrap around
+            minimap_segments = []
+            current_segment = []
+            prev_rel_x = None
+
+            for pt in terrain_pts:
+                rel_x = wrap_x_relative(pt[0])
+                mx, my = world_to_minimap(pt[0], pt[1])
+
+                # Check if we crossed the wrap boundary (large jump in relative x)
+                if prev_rel_x is not None and abs(rel_x - prev_rel_x) > WORLD_WIDTH / 4.0:
+                    # Save current segment and start new one
+                    if len(current_segment) > 1:
+                        minimap_segments.append(current_segment)
+                    current_segment = []
+
+                current_segment.append((mx, my))
+                prev_rel_x = rel_x
+
+            # Don't forget the last segment
+            if len(current_segment) > 1:
+                minimap_segments.append(current_segment)
+
+            # Draw all segments
+            for segment in minimap_segments:
+                pygame.draw.lines(screen, (150, 150, 150), False, segment, 1)
 
         # Draw landing pads
         for i, pad in enumerate(pads_info):
             pad_x1, pad_y = pad["x1"], pad["y"]
             pad_x2 = pad["x2"]
+
+            # Check if pad is visible (within half world width of lander)
+            pad_center_x = (pad_x1 + pad_x2) / 2.0
+            rel_center = wrap_x_relative(pad_center_x)
+            if abs(rel_center) > WORLD_WIDTH / 2.0:
+                continue  # Pad is beyond visible range
+
             mp1 = world_to_minimap(pad_x1, pad_y)
             mp2 = world_to_minimap(pad_x2, pad_y)
 
@@ -682,7 +768,6 @@ def main():
                 # Draw pulsing indicator
                 if not game_state.crashed and not game_state.landed:
                     pulse = abs(math.sin(pygame.time.get_ticks() * 0.005)) * 0.5 + 0.5
-                    pad_center_x = (pad_x1 + pad_x2) / 2.0
                     center_minimap = world_to_minimap(pad_center_x, pad_y)
                     pulse_radius1 = int(3 + pulse * 3)
                     pulse_radius2 = int(5 + pulse * 3)
@@ -696,16 +781,17 @@ def main():
             pygame.draw.circle(screen, pad_color, mp1, 2)
             pygame.draw.circle(screen, pad_color, mp2, 2)
 
-        # Draw lander on mini-map
+        # Draw lander on mini-map (always at center)
         if lander:
-            lander_minimap = world_to_minimap(lander.ascent_stage.position.x, lander.ascent_stage.position.y)
+            lander_minimap_x = minimap_x + minimap_margin + map_inner_width // 2
+            lander_minimap_y = minimap_y + minimap_height - minimap_margin - int(lander.ascent_stage.position.y * scale_y)
             if game_state.crashed:
                 lander_color = (255, 0, 0)  # Red when crashed
             elif game_state.landed:
                 lander_color = (100, 255, 100)  # Light green when landed
             else:
                 lander_color = (0, 255, 0)  # Green when flying
-            pygame.draw.circle(screen, lander_color, lander_minimap, 3)
+            pygame.draw.circle(screen, lander_color, (lander_minimap_x, lander_minimap_y), 3)
 
         # Label
         font_mini = pygame.font.SysFont("Arial", 10, bold=True)
@@ -877,6 +963,93 @@ def main():
             font = pygame.font.Font(None, 36)
             ai_text = font.render("AI AUTOPILOT", True, (0, 255, 0))
             screen.blit(ai_text, (SCREEN_WIDTH // 2 - 100, 10))
+
+        # Draw game over / success indicator
+        if game_state.crashed or game_state.landed:
+            # Semi-transparent overlay
+            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 128))
+            screen.blit(overlay, (0, 0))
+
+            font_big = pygame.font.SysFont("Arial", 72, bold=True)
+            font_sub = pygame.font.SysFont("Arial", 36)
+            font_info = pygame.font.SysFont("consolas", 24)
+
+            if game_state.crashed:
+                # Crash message
+                title_text = font_big.render("CRASH!", True, (255, 50, 50))
+                title_rect = title_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 80))
+                screen.blit(title_text, title_rect)
+
+                sub_text = font_sub.render("Mission Failed", True, (255, 150, 150))
+                sub_rect = sub_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 20))
+                screen.blit(sub_text, sub_rect)
+            else:
+                # Success message
+                title_text = font_big.render("LANDED!", True, (50, 255, 50))
+                title_rect = title_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 80))
+                screen.blit(title_text, title_rect)
+
+                # Check if on target pad
+                if lander:
+                    pos_x = lander.descent_stage.position.x
+                    pos_y = lander.descent_stage.position.y
+                    on_target = is_point_on_pad(pos_x, pos_y, target_pad, tolerance_x=2.5, tolerance_y=3.0)
+                    if on_target:
+                        sub_text = font_sub.render("Perfect Landing on Target!", True, (150, 255, 150))
+                    else:
+                        sub_text = font_sub.render("Landed (Wrong Pad)", True, (255, 255, 150))
+                    sub_rect = sub_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 20))
+                    screen.blit(sub_text, sub_rect)
+
+            # Show final stats
+            if lander:
+                final_vel = lander.descent_stage.linearVelocity
+                final_angle = math.degrees(lander.descent_stage.angle)
+                stats_y = SCREEN_HEIGHT // 2 + 40
+
+                vel_text = font_info.render(f"Final Velocity: {abs(final_vel.x):.1f} m/s H, {abs(final_vel.y):.1f} m/s V", True, (200, 200, 200))
+                vel_rect = vel_text.get_rect(center=(SCREEN_WIDTH // 2, stats_y))
+                screen.blit(vel_text, vel_rect)
+
+                angle_text = font_info.render(f"Final Angle: {final_angle:+.1f}", True, (200, 200, 200))
+                angle_rect = angle_text.get_rect(center=(SCREEN_WIDTH // 2, stats_y + 30))
+                screen.blit(angle_text, angle_rect)
+
+                fuel_pct = (descent_fuel / max_descent_fuel) * 100 if max_descent_fuel > 0 else 0
+                fuel_text = font_info.render(f"Fuel Remaining: {fuel_pct:.0f}%", True, (200, 200, 200))
+                fuel_rect = fuel_text.get_rect(center=(SCREEN_WIDTH // 2, stats_y + 60))
+                screen.blit(fuel_text, fuel_rect)
+
+            # Restart prompt
+            restart_text = font_sub.render("Press R to Restart", True, (255, 255, 255))
+            restart_rect = restart_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 140))
+            screen.blit(restart_text, restart_rect)
+
+        # Draw controls legend (lower right)
+        font_legend = pygame.font.SysFont("consolas", 12)
+        legend_lines = [
+            "CONTROLS",
+            "--------",
+            "SPACE    Main Engine",
+            "UP/DOWN  Throttle +/-5%",
+            ", . /    Gimbal L/R/Center",
+            "",
+            "Q/E      Translate L/R",
+            "LEFT/RIGHT  Side RCS",
+            "Num 7/9  RCS Up L/R",
+            "Num 1/3  RCS Down L/R",
+            "",
+            "A        Toggle AI",
+            "R        Reset",
+            "ESC      Quit",
+        ]
+        legend_x = SCREEN_WIDTH - 180
+        legend_y = SCREEN_HEIGHT - len(legend_lines) * 14 - 10
+        for i, line in enumerate(legend_lines):
+            color = (150, 150, 150) if i > 0 else (200, 200, 200)
+            text = font_legend.render(line, True, color)
+            screen.blit(text, (legend_x, legend_y + i * 14))
 
         pygame.display.flip()
 

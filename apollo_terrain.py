@@ -19,16 +19,18 @@ from Box2D import b2Vec2
 class ApolloTerrain:
     """Generate and manage terrain for Apollo lander training."""
 
-    def __init__(self, world_width_meters=200.0, difficulty=1):
+    def __init__(self, world_width_meters=200.0, difficulty=1, roughness=None):
         """
         Initialize terrain generator.
 
         Args:
             world_width_meters: Total width of world in meters
-            difficulty: 1-3, affects terrain roughness and pad size
+            difficulty: 1-3, affects pad size and count
+            roughness: Terrain bumpiness (if None, calculated from difficulty)
         """
         self.world_width = world_width_meters
         self.difficulty = difficulty
+        self.roughness = roughness  # None means use difficulty-based calculation
 
     def generate_terrain(self, world, num_segments=None):
         """
@@ -55,8 +57,8 @@ class ApolloTerrain:
         start_height = 6.0 + random.uniform(-2.0, 2.0)
         y = start_height
 
-        # Roughness increases with difficulty
-        roughness = 2.5 + self.difficulty * 0.5
+        # Use provided roughness or calculate from difficulty
+        roughness = self.roughness if self.roughness is not None else (2.5 + self.difficulty * 0.5)
 
         # Generate varied terrain heights (stop one segment early to add seamless endpoint)
         for i in range(num_segments):
