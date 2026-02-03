@@ -11,6 +11,7 @@ A 3-screen scrolling lunar lander game with:
 """
 
 import math
+import os
 import pygame
 import random
 import sys
@@ -48,6 +49,24 @@ try:
     print("[OK] AI agent loaded successfully")
 except ImportError:
     print("[!] AI agent not found - manual mode only")
+
+
+def find_model(seed, save_dir='models'):
+    """Find best available model for a seed, preferring in-game stage 4."""
+    candidates = [
+        os.path.join(save_dir, f'ingame_stage4_seed{seed}_best.pth'),
+        os.path.join(save_dir, f'ingame_stage4_seed{seed}_final.pth'),
+        os.path.join(save_dir, f'ingame_stage3_seed{seed}_best.pth'),
+        os.path.join(save_dir, f'curriculum_stage4_seed{seed}_best.pth'),
+        os.path.join(save_dir, f'curriculum_stage4_seed{seed}_final.pth'),
+        os.path.join(save_dir, f'curriculum_stage3_seed{seed}_best.pth'),
+        os.path.join(save_dir, f'apollo_ddqn_seed{seed}_best.pth'),
+        os.path.join(save_dir, f'apollo_ddqn_seed{seed}_final.pth'),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
 
 # -------------------------------------------------
 # Config
@@ -126,6 +145,10 @@ class GameState:
         self.ai_enabled = False
         self.ai_agent = None
 
+        # AI angle tracking (continuous, matches training env)
+        self.ai_prev_raw_angle = 0.0
+        self.ai_cumulative_angle = 0.0
+
     def reset(self):
         self.score = 0
         self.landed = False
@@ -134,14 +157,23 @@ class GameState:
         self.game_over = False
         self.stage = "descent"
         # Keep AI state when resetting
+        self.ai_prev_raw_angle = 0.0
+        self.ai_cumulative_angle = 0.0
 
-def load_ai_agent(model_path='lunarlander_double_dqn.pth'):
-    """Load the trained AI agent."""
+def load_ai_agent(model_path=None, seed=999, save_dir='models'):
+    """Load the trained AI agent (9-dim state, 5-action always-on engine model)."""
     if not AI_AVAILABLE:
         return None
 
+    if model_path is None:
+        model_path = find_model(seed, save_dir)
+
+    if model_path is None or not os.path.exists(model_path):
+        print(f"[!] No AI model found (seed={seed}, dir={save_dir})")
+        return None
+
     try:
-        agent = DoubleDQNAgent(state_size=8, action_size=4, seed=0)
+        agent = DoubleDQNAgent(state_size=9, action_size=5, seed=seed)
         agent.load(model_path)
         print(f"[OK] AI agent loaded from {model_path}")
         return agent
@@ -166,47 +198,59 @@ def get_ai_action(agent, state):
         print(f"[!] AI action error: {e}")
         return 0
 
-def lander_state_to_gym_state(lander, target_x, target_y=0):
+def lander_state_to_gym_state(lander, target_x, target_y, descent_throttle, game_state):
     """
-    Convert lander physics state to Gymnasium LunarLander-v3 compatible state.
+    Convert lander physics state to AI model's 9-dim state format.
+    Matches apollo_lander_env._get_observation() exactly.
 
-    State format (8 dimensions):
-    0: x position (normalized)
-    1: y position (normalized)
-    2: x velocity (normalized)
-    3: y velocity (normalized)
-    4: angle (radians)
-    5: angular velocity
-    6: left leg contact (1 if touching ground)
-    7: right leg contact (1 if touching ground)
+    State format (9 dimensions):
+    0: x position relative to target (normalized by world_width/2)
+    1: y position relative to target pad (normalized by 50m)
+    2: x velocity (normalized by 10)
+    3: y velocity (normalized by 10)
+    4: angle (continuous tracking, normalized to [-pi, pi])
+    5: angular velocity (negated to match convention: + = rotating right)
+    6: left leg contact
+    7: right leg contact
+    8: throttle level (0.1 to 1.0)
     """
-    pos = lander.body.position
-    vel = lander.body.linearVelocity
-    angle = lander.body.angle
-    angular_vel = lander.body.angularVelocity
+    pos = lander.descent_stage.position
+    vel = lander.descent_stage.linearVelocity
+    raw_angle = lander.descent_stage.angle
+    angular_vel = lander.descent_stage.angularVelocity
 
-    # Normalize positions relative to target
-    x_norm = (pos.x - target_x) / (WORLD_WIDTH / 2.0)
-    y_norm = pos.y / 100.0  # Approximate max height
+    # Continuous angle tracking (prevents jumps at +/-pi)
+    angle_delta = raw_angle - game_state.ai_prev_raw_angle
+    if angle_delta > math.pi:
+        angle_delta -= 2 * math.pi
+    elif angle_delta < -math.pi:
+        angle_delta += 2 * math.pi
+    game_state.ai_cumulative_angle -= angle_delta  # Negate: + = tilted right
+    game_state.ai_prev_raw_angle = raw_angle
+
+    # Normalize angle to [-pi, pi] for neural network
+    angle = game_state.ai_cumulative_angle
+    normalized_angle = math.atan2(math.sin(angle), math.cos(angle))
+
+    # Normalize positions (match training env)
+    rel_x = np.clip((pos.x - target_x) / (WORLD_WIDTH / 2.0), -1.5, 1.5)
+    rel_y = np.clip((pos.y - target_y) / 50.0, -1.5, 1.5)
 
     # Normalize velocities
-    vx_norm = vel.x / 10.0
-    vy_norm = vel.y / 10.0
+    vel_x = np.clip(vel.x / 10.0, -1.5, 1.5)
+    vel_y = np.clip(vel.y / 10.0, -1.5, 1.5)
+    angular_vel = np.clip(angular_vel, -5.0, 5.0)
 
-    # Check leg contacts (simplified - would need actual contact detection)
-    left_contact = 0.0
-    right_contact = 0.0
-
-    # Create state array
     state = np.array([
-        x_norm,
-        y_norm,
-        vx_norm,
-        vy_norm,
-        angle,
-        angular_vel,
-        left_contact,
-        right_contact
+        rel_x,
+        rel_y,
+        vel_x,
+        vel_y,
+        normalized_angle,
+        -angular_vel,   # Negate to match angle convention (+ = rotating right)
+        0.0,            # left leg contact (no contact listener in game)
+        0.0,            # right leg contact
+        descent_throttle,
     ], dtype=np.float32)
 
     return state
@@ -279,7 +323,10 @@ def main():
 
         # Spawn lander at configured altitude
         # Game scale: 1 game meter = 1 real km
-        spawn_x = target_x + random.uniform(-20.0, 20.0)  # Near target pad with some offset
+        # Offset is +/- 5 to 20 meters from center (never directly over pad)
+        offset_magnitude = random.uniform(5.0, 20.0)
+        offset_sign = random.choice([-1, 1])
+        spawn_x = target_x + (offset_magnitude * offset_sign)
         spawn_y = SPAWN_ALTITUDE
         max_world_height = SPAWN_ALTITUDE * 1.5
 
@@ -297,6 +344,21 @@ def main():
         initial_velocity_y = random.uniform(-5.0, -2.0)  # Slight downward velocity
         lander.descent_stage.linearVelocity = b2Vec2(initial_velocity_x, initial_velocity_y)
         lander.ascent_stage.linearVelocity = b2Vec2(initial_velocity_x, initial_velocity_y)
+
+        # Apply random initial rotation (+/- 90 degrees) to match training environment
+        # This makes the game more challenging and consistent with AI training
+        initial_angle = random.uniform(-math.pi/2, math.pi/2)
+        lander.descent_stage.angle = initial_angle
+        lander.ascent_stage.angle = initial_angle
+
+        # Also add some initial angular velocity
+        initial_angular_vel = random.uniform(-0.5, 0.5)
+        lander.descent_stage.angularVelocity = initial_angular_vel
+        lander.ascent_stage.angularVelocity = initial_angular_vel
+
+        # Initialize AI angle tracking for continuous angle observation
+        game_state.ai_prev_raw_angle = initial_angle
+        game_state.ai_cumulative_angle = -initial_angle  # Negate: + = tilted right
 
         csm = None  # CSM disabled for now
         csm_fuel = 0.0
@@ -341,6 +403,13 @@ def main():
                         print(f"\n{'='*60}")
                         print(f"AI AUTOPILOT {mode}")
                         print(f"{'='*60}\n")
+                        # Initialize angle tracking when AI is turned on mid-flight
+                        if game_state.ai_enabled and lander:
+                            raw_angle = lander.descent_stage.angle
+                            game_state.ai_prev_raw_angle = raw_angle
+                            game_state.ai_cumulative_angle = -raw_angle
+                            # Enforce minimum throttle (AI trained with 10% min)
+                            descent_throttle = max(0.1, descent_throttle)
                     else:
                         print("[!] AI agent not available")
 
@@ -372,28 +441,39 @@ def main():
         rcs_right_side = False
 
         if game_state.ai_enabled and game_state.ai_agent is not None:
-            # AI CONTROL MODE
+            # AI CONTROL MODE (5-action always-on engine model)
             target_x = (target_pad["x1"] + target_pad["x2"]) / 2.0
-            state = lander_state_to_gym_state(lander, target_x)
+            target_y = target_pad["y"]
+            state = lander_state_to_gym_state(lander, target_x, target_y, descent_throttle, game_state)
             action = get_ai_action(game_state.ai_agent, state)
 
-            # Map Gymnasium actions to game controls
-            # 0: do nothing
-            # 1: fire left orientation engine (rotate left)
-            # 2: fire main engine
-            # 3: fire right orientation engine (rotate right)
+            # Engine is ALWAYS ON at current throttle (matches training env)
+            main_thrust = True
+
+            # Map 5-action space to game controls:
+            # 0: NOOP (engine continues at current throttle, no RCS)
+            # 1: RCS_L - Rotate LEFT (coupled: left pod down + right pod up)
+            # 2: THR_UP - Increase throttle by 5%
+            # 3: THR_DOWN - Decrease throttle by 5%
+            # 4: RCS_R - Rotate RIGHT (coupled: right pod down + left pod up)
             if action == 1:
-                # LEFT rotation: right pod fires sideways + down, left pod fires up
-                rcs_left_up = True
-                rcs_right_down = True
-                rcs_right_side = True
+                # RCS_L: rotate left
+                # Training env applies force DOWN at left, UP at right
+                # Game booleans name the THRUSTER (flame) direction, not force direction
+                # So we need _up (flame up = force down) and _down (flame down = force up)
+                rcs_left_up = True     # flame UP at left pod → force DOWN at left
+                rcs_right_down = True  # flame DOWN at right pod → force UP at right
             elif action == 2:
-                main_thrust = True
+                # THR_UP: increase throttle
+                descent_throttle = min(1.0, descent_throttle + 0.05)
             elif action == 3:
-                # RIGHT rotation: left pod fires sideways + down, right pod fires up
-                rcs_right_up = True
-                rcs_left_down = True
-                rcs_left_side = True
+                # THR_DOWN: decrease throttle (min 10% like training env)
+                descent_throttle = max(0.1, descent_throttle - 0.05)
+            elif action == 4:
+                # RCS_R: rotate right
+                # Training env applies force DOWN at right, UP at left
+                rcs_right_up = True    # flame UP at right pod → force DOWN at right
+                rcs_left_down = True   # flame DOWN at left pod → force UP at left
         else:
             # MANUAL CONTROL MODE - Numpad controls
             main_thrust = keys[pygame.K_SPACE]
@@ -471,7 +551,11 @@ def main():
 
             # Real Apollo RCS thrust: 445 N per thruster
             # With mass scaling: force = thrust_N / MASS_SCALE (100 kg per unit)
-            rcs_thrust_per_thruster = 445.0 / 100.0  # 4.45 force units per thruster
+            # AI uses 15x boosted RCS (matches training env for meaningful control authority)
+            if game_state.ai_enabled:
+                rcs_thrust_per_thruster = 15.0 * 445.0 / 100.0  # 66.75 force units (training env)
+            else:
+                rcs_thrust_per_thruster = 445.0 / 100.0  # 4.45 force units (realistic)
 
             # Pod positions
             right_pod_pos = b2Vec2(rcs_center_offset_x, rcs_center_y)
@@ -627,12 +711,12 @@ def main():
             draw_body(screen, lander.descent_stage, descent_color, cam_x, SCREEN_WIDTH, SCREEN_HEIGHT, cam_y)
 
             # Draw thruster flames
-            # Descent stage thrusters (only main engine)
+            # Descent stage thrusters (only main engine, only if fuel remains)
             draw_thrusters(
                 screen,
                 lander.descent_stage,
                 is_ascent=False,
-                main_on=main_thrust,
+                main_on=main_thrust and descent_fuel > 0,
                 tl=False,
                 bl=False,
                 tr=False,
@@ -961,7 +1045,15 @@ def main():
         # Draw AI status indicator
         if game_state.ai_enabled:
             font = pygame.font.Font(None, 36)
-            ai_text = font.render("AI AUTOPILOT", True, (0, 255, 0))
+            ai_text = font.render("AI AUTOPILOT [A to disable]", True, (0, 255, 0))
+            screen.blit(ai_text, (SCREEN_WIDTH // 2 - 150, 10))
+            # Show engine is always-on
+            font_ai_sub = pygame.font.Font(None, 24)
+            engine_text = font_ai_sub.render("Engine: ALWAYS ON | RCS: AI-controlled", True, (0, 200, 200))
+            screen.blit(engine_text, (SCREEN_WIDTH // 2 - 150, 38))
+        elif AI_AVAILABLE and game_state.ai_agent is not None:
+            font = pygame.font.Font(None, 24)
+            ai_text = font.render("Press A for AI autopilot", True, (150, 150, 150))
             screen.blit(ai_text, (SCREEN_WIDTH // 2 - 100, 10))
 
         # Draw game over / success indicator
@@ -1028,22 +1120,35 @@ def main():
 
         # Draw controls legend (lower right)
         font_legend = pygame.font.SysFont("consolas", 12)
-        legend_lines = [
-            "CONTROLS",
-            "--------",
-            "SPACE    Main Engine",
-            "UP/DOWN  Throttle +/-5%",
-            ", . /    Gimbal L/R/Center",
-            "",
-            "Q/E      Translate L/R",
-            "LEFT/RIGHT  Side RCS",
-            "Num 7/9  RCS Up L/R",
-            "Num 1/3  RCS Down L/R",
-            "",
-            "A        Toggle AI",
-            "R        Reset",
-            "ESC      Quit",
-        ]
+        if game_state.ai_enabled:
+            legend_lines = [
+                "AI AUTOPILOT ACTIVE",
+                "-------------------",
+                "Engine: Always on",
+                "AI controls: RCS +",
+                "  throttle (5 actions)",
+                "",
+                "A        Manual mode",
+                "R        Reset",
+                "ESC      Quit",
+            ]
+        else:
+            legend_lines = [
+                "MANUAL CONTROLS",
+                "---------------",
+                "SPACE    Main Engine",
+                "UP/DOWN  Throttle +/-5%",
+                ", . /    Gimbal L/R/Center",
+                "",
+                "Q/E      Translate L/R",
+                "LEFT/RIGHT  Side RCS",
+                "Num 7/9  RCS Up L/R",
+                "Num 1/3  RCS Down L/R",
+                "",
+                "A        Toggle AI",
+                "R        Reset",
+                "ESC      Quit",
+            ]
         legend_x = SCREEN_WIDTH - 180
         legend_y = SCREEN_HEIGHT - len(legend_lines) * 14 - 10
         for i, line in enumerate(legend_lines):
