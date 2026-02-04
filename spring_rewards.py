@@ -1,14 +1,22 @@
 """
-Spring-Based Reward Computer
+Spring-Based Reward Computer (v2 — Lateral RCS Redesign)
 
-Extracts the spring potential energy reward computation into a standalone class
-so it can be shared between the gym environment (apollo_lander_env.py) and the
-game-based training environment (train_in_game.py).
+Computes spring potential energy for reward shaping in lunar lander training.
+Uses potential-based reward shaping: reward = -(E_new - E_old), so reducing
+total energy is rewarded and increasing it is penalized.
 
-Springs 1-3: Rotational stabilization (anchored to imaginary circle around lander)
-Spring 4: Pad attraction (anchored to landing pad center, with rest length)
-Spring 5: Horizontal centering (altitude-weighted horizontal distance to pad)
-Dashpots: Angular velocity damping, descent profile tracking, ascend penalty
+Springs:
+  A (Rotation): 3 springs on imaginary circle — zero energy when upright
+  B (Horizontal): Centering spring toward pad — zero energy when directly above pad
+  C (Vertical): Altitude spring — zero energy at touchdown
+      Quadratic mode (default): 0.5*k*h² — gradient decreases near surface
+      Log mode (vertical_log_scale>0): k*scale*log(1+h) — gradient increases near surface
+
+Dampers:
+  D (Angular velocity): Penalizes rotational speed
+  E (Descent rate): Tracks target descent profile
+  F (Ascend penalty): Penalizes upward velocity (wastes fuel)
+  G (Horizontal velocity): Penalizes lateral speed (smooth translation)
 """
 
 import math
@@ -17,40 +25,46 @@ import math
 class SpringRewardComputer:
     """Computes spring potential energy and reward deltas for lunar lander training."""
 
-    def __init__(self, k_rotation=20.0, k_pad=1.0, k_centering=0.0,
-                 c_damping=30.0, c_descent=3.0, c_ascend=5.0,
-                 descent_max_rate=2.5, pad_rest_length=15.0,
+    def __init__(self, k_rotation=20.0, k_horizontal=0.0, k_vertical=0.0,
+                 c_angular=30.0, c_descent=3.0, c_ascend=5.0,
+                 c_horizontal_vel=0.0, descent_max_rate=2.5,
+                 proximity_gain=0.0, vertical_log_scale=0.0,
                  circle_radius=5.0, alpha_deg=10.0,
                  h_top=3.35, h_bot=-1.836,
                  time_penalty=0.1, spawn_altitude=50.0,
                  rotation_deadzone_deg=10.0):
         """
         Args:
-            k_rotation: Spring constant for rotational springs (1,2,3)
-            k_pad: Spring constant for pad attraction spring (4)
-            k_centering: Spring constant for horizontal centering spring (5)
-            c_damping: Damping coefficient for angular velocity
-            c_descent: Descent profile tracking coefficient
-            c_ascend: Extra penalty for ascending (positive vel_y)
+            k_rotation: Spring constant for rotational springs (A)
+            k_horizontal: Spring constant for horizontal centering (B)
+            k_vertical: Spring constant for vertical descent spring (C)
+            c_angular: Damping coefficient for angular velocity (D)
+            c_descent: Descent profile tracking coefficient (E)
+            c_ascend: Penalty for ascending / positive vel_y (F)
+            c_horizontal_vel: Damping for horizontal velocity (G)
             descent_max_rate: Target descent rate at spawn altitude (m/s)
-            pad_rest_length: Rest length for pad spring (compression zone)
-            circle_radius: Radius of imaginary circle for spring anchors
+            proximity_gain: Extra vertical spring tightening near surface (quadratic mode)
+            vertical_log_scale: If >0, use log vertical spring instead of quadratic.
+                E = k_vertical * scale * log(1 + altitude). Gradient = k*scale/(1+h),
+                so reward per meter INCREASES near the surface (commitment reward).
+            circle_radius: Radius of imaginary circle for rotation spring anchors
             alpha_deg: Angle offset (degrees) for top springs from vertical
             h_top: Height of lander top above descent stage center
-            h_bot: Height of lander bottom below descent stage center (negative)
+            h_bot: Height of lander bottom (negative = below center)
             time_penalty: Per-step time penalty
             spawn_altitude: Reference altitude for normalization
-            rotation_deadzone_deg: Tilt angle (degrees) below which rotational
-                spring energy is zeroed, allowing small tilts for lateral translation
+            rotation_deadzone_deg: Tilt angle below which rotational energy is zero
         """
         self.k_rotation = k_rotation
-        self.k_pad = k_pad
-        self.k_centering = k_centering
-        self.c_damping = c_damping
+        self.k_horizontal = k_horizontal
+        self.k_vertical = k_vertical
+        self.c_angular = c_angular
         self.c_descent = c_descent
         self.c_ascend = c_ascend
+        self.c_horizontal_vel = c_horizontal_vel
         self.descent_max_rate = descent_max_rate
-        self.pad_rest_length = pad_rest_length
+        self.proximity_gain = proximity_gain
+        self.vertical_log_scale = vertical_log_scale
         self.circle_radius = circle_radius
         self.alpha_rad = math.radians(alpha_deg)
         self.h_top = h_top
@@ -63,13 +77,13 @@ class SpringRewardComputer:
         self._precompute_rest_lengths()
 
     def _precompute_rest_lengths(self):
-        """Compute rest lengths for springs at theta=0 (upright equilibrium)."""
+        """Compute rest lengths for rotation springs at theta=0 (upright)."""
         R = self.circle_radius
         alpha = self.alpha_rad
         h_top = self.h_top
         h_bot = self.h_bot
 
-        # Spring 1 (top-left): anchor at (+R*sin(alpha), +R*cos(alpha)), lander top at (0, h_top)
+        # Spring 1 (top-left): anchor at (+R*sin(alpha), +R*cos(alpha)), top at (0, h_top)
         dx1 = R * math.sin(alpha)
         dy1 = R * math.cos(alpha) - h_top
         self.rest_1 = math.sqrt(dx1**2 + dy1**2)
@@ -77,30 +91,26 @@ class SpringRewardComputer:
         # Spring 2 (top-right): mirror of spring 1
         self.rest_2 = self.rest_1
 
-        # Spring 3 (bottom): anchor at (0, -R), lander bottom at (0, h_bot)
+        # Spring 3 (bottom): anchor at (0, -R), bottom at (0, h_bot)
         self.rest_3 = abs(-R - h_bot)
 
-        # Spring 4 (pad): configurable rest length
-        self.rest_4 = self.pad_rest_length
-
         # Rotation dead zone: precompute E_rot at the dead zone angle
-        # so tilts within this range produce zero rotational energy
         dz = self.rotation_deadzone_rad
         if dz > 0:
             sin_dz = math.sin(dz)
             cos_dz = math.cos(dz)
-            # Lander attachment points when tilted by dead zone angle
-            dz_top_x = -h_top * sin_dz  # relative to lander center
+            dz_top_x = -h_top * sin_dz
             dz_top_y = h_top * cos_dz
             dz_bot_x = -h_bot * sin_dz
             dz_bot_y = h_bot * cos_dz
-            # Anchors stay at upright positions (relative to lander center)
+
             def _se(ax, ay, bx, by, rest_len):
                 ddx = ax - bx
                 ddy = ay - by
                 length = math.sqrt(ddx * ddx + ddy * ddy)
                 ext = length - rest_len
                 return 0.5 * self.k_rotation * ext * ext
+
             E1_dz = _se(R * math.sin(alpha), R * math.cos(alpha), dz_top_x, dz_top_y, self.rest_1)
             E2_dz = _se(-R * math.sin(alpha), R * math.cos(alpha), dz_top_x, dz_top_y, self.rest_2)
             E3_dz = _se(0, -R, dz_bot_x, dz_bot_y, self.rest_3)
@@ -109,19 +119,18 @@ class SpringRewardComputer:
             self.E_rot_deadzone = 0.0
 
     def compute_energy(self, lander_x, lander_y, angle, angular_vel,
-                       pad_x, pad_y, vel_y=0.0, terrain_height=0.0):
+                       pad_x, pad_y, vel_y=0.0, vel_x=0.0, terrain_height=0.0):
         """
         Compute total spring potential energy for the current lander state.
 
         Args:
-            lander_x: Lander x position (world coords)
-            lander_y: Lander y position (world coords)
+            lander_x, lander_y: Lander position (world coords)
             angle: Lander angle (radians, Box2D convention)
             angular_vel: Angular velocity (rad/s)
-            pad_x: Landing pad center x
-            pad_y: Landing pad y
-            vel_y: Vertical velocity (for descent profile)
-            terrain_height: Terrain height at lander x (for altitude calc)
+            pad_x, pad_y: Landing pad center position
+            vel_y: Vertical velocity
+            vel_x: Horizontal velocity
+            terrain_height: Terrain height at lander x position
 
         Returns:
             Total potential energy (float)
@@ -134,13 +143,14 @@ class SpringRewardComputer:
         sin_t = math.sin(angle)
         cos_t = math.cos(angle)
 
-        # Lander attachment points (world coords, rotate with lander)
+        # --- Spring A: Rotation (3 springs on imaginary circle) ---
+        # Lander attachment points (rotate with lander)
         top_x = lander_x - h_top * sin_t
         top_y = lander_y + h_top * cos_t
         bot_x = lander_x - h_bot * sin_t
         bot_y = lander_y + h_bot * cos_t
 
-        # Circle anchor points (move with lander position, NOT rotation)
+        # Circle anchor points (follow lander position, NOT rotation)
         a1_x = lander_x + R * math.sin(alpha)
         a1_y = lander_y + R * math.cos(alpha)
         a2_x = lander_x - R * math.sin(alpha)
@@ -148,7 +158,6 @@ class SpringRewardComputer:
         a3_x = lander_x
         a3_y = lander_y - R
 
-        # Spring energy helper
         def spring_e(ax, ay, bx, by, rest_len, k):
             dx = ax - bx
             dy = ay - by
@@ -159,36 +168,49 @@ class SpringRewardComputer:
         E1 = spring_e(a1_x, a1_y, top_x, top_y, self.rest_1, self.k_rotation)
         E2 = spring_e(a2_x, a2_y, top_x, top_y, self.rest_2, self.k_rotation)
         E3 = spring_e(a3_x, a3_y, bot_x, bot_y, self.rest_3, self.k_rotation)
-        E4 = spring_e(pad_x, pad_y, bot_x, bot_y, self.rest_4, self.k_pad)
 
-        # Spring 5: Horizontal centering (altitude-weighted)
-        # At high altitude, centering is weak (focus on stabilization)
-        # Near pad altitude, centering is strong (steer to pad)
-        E5 = 0.0
-        if self.k_centering > 0:
+        # Apply rotation dead zone
+        E_rot = max(0.0, E1 + E2 + E3 - self.E_rot_deadzone)
+
+        # --- Spring B: Horizontal centering ---
+        # Two opposing springs anchored at pad center, zero energy when directly above
+        E_horizontal = 0.0
+        if self.k_horizontal > 0:
             dist_x = lander_x - pad_x
-            altitude = max(0.1, lander_y - pad_y)
-            altitude_factor = max(0.1, 1.0 - altitude / self.spawn_altitude)
-            E5 = 0.5 * self.k_centering * dist_x * dist_x * (1.0 + 2.0 * altitude_factor)
+            E_horizontal = 0.5 * self.k_horizontal * dist_x * dist_x
 
-        # Angular velocity damping
-        E_damp = 0.5 * self.c_damping * angular_vel * angular_vel
-
-        # Descent profile tracking
+        # --- Spring C: Vertical descent ---
         altitude = max(0.1, lander_y - terrain_height)
+        E_vertical = 0.0
+        if self.k_vertical > 0:
+            if self.vertical_log_scale > 0:
+                # Log mode: E = k * scale * log(1 + h)
+                # Gradient dE/dh = k * scale / (1 + h) — increases near surface
+                E_vertical = self.k_vertical * self.vertical_log_scale * math.log(1.0 + altitude)
+            else:
+                # Quadratic mode: E = 0.5 * k_eff * h² — gradient decreases near surface
+                k_eff = self.k_vertical * (1.0 + self.proximity_gain / max(altitude, 1.0))
+                E_vertical = 0.5 * k_eff * altitude * altitude
+
+        # --- Damper D: Angular velocity ---
+        E_ang_damp = 0.5 * self.c_angular * angular_vel * angular_vel
+
+        # --- Damper E: Descent rate tracking ---
         target_vy = -self.descent_max_rate * min(1.0, altitude / self.spawn_altitude)
         vel_error = vel_y - target_vy
-        E_profile = 0.5 * self.c_descent * vel_error * vel_error
+        E_descent = 0.5 * self.c_descent * vel_error * vel_error
 
-        # Ascend penalty (going up is always wasteful)
+        # --- Damper F: Ascend penalty ---
         E_ascend = 0.0
         if vel_y > 0:
             E_ascend = 0.5 * self.c_ascend * vel_y * vel_y
 
-        # Apply rotation dead zone: tilts within the dead zone produce zero rotational energy
-        E_rot = max(0.0, E1 + E2 + E3 - self.E_rot_deadzone)
+        # --- Damper G: Horizontal velocity ---
+        E_hv_damp = 0.0
+        if self.c_horizontal_vel > 0:
+            E_hv_damp = 0.5 * self.c_horizontal_vel * vel_x * vel_x
 
-        return E_rot + E4 + E5 + E_damp + E_profile + E_ascend
+        return E_rot + E_horizontal + E_vertical + E_ang_damp + E_descent + E_ascend + E_hv_damp
 
     def compute_reward(self, energy_old, energy_new, rcs_active=False,
                        cumulative_angle=0.0, landing_status='flying',
@@ -232,10 +254,10 @@ class SpringRewardComputer:
         # Terminal rewards (large to dominate over shaping/approach bonuses)
         if landing_status == 'landed':
             if on_target:
-                reward += 3000.0
-                reward += 500.0 * pad_mult
+                reward += 4000.0
+                reward += 750.0 * pad_mult
             else:
-                reward += 1500.0
+                reward += 500.0
 
             # Fuel efficiency bonus
             reward += 200.0 * (fuel / max_fuel) if max_fuel > 0 else 0.0

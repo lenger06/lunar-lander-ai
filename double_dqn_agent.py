@@ -206,3 +206,52 @@ class DoubleDQNAgent:
         """Load model weights."""
         self.qnetwork_local.load_state_dict(torch.load(filename, map_location=self.device))
         self.qnetwork_target.load_state_dict(torch.load(filename, map_location=self.device))
+
+    def load_with_expanded_actions(self, filename, old_action_size):
+        """Load weights from a model with fewer actions, expanding the output layer.
+
+        Copies all shared hidden layer weights directly. For the final output layer,
+        copies the first `old_action_size` columns and initializes new action columns
+        with small random values near the NOOP (action 0) Q-value.
+
+        Args:
+            filename: Path to saved model weights (with old_action_size outputs)
+            old_action_size: Number of actions in the saved model
+        """
+        old_state_dict = torch.load(filename, map_location=self.device)
+
+        new_local_dict = self.qnetwork_local.state_dict()
+        new_target_dict = self.qnetwork_target.state_dict()
+
+        for key in old_state_dict:
+            old_tensor = old_state_dict[key]
+            new_tensor = new_local_dict[key]
+
+            if old_tensor.shape == new_tensor.shape:
+                # Same shape — copy directly (all hidden layers)
+                new_local_dict[key] = old_tensor.clone()
+                new_target_dict[key] = old_tensor.clone()
+            elif 'fc4' in key:
+                # Final output layer — expanded action dimension
+                if 'weight' in key:
+                    # Weight shape: [action_size, hidden_size]
+                    # Copy existing action rows, init new ones near NOOP row
+                    new_local_dict[key][:old_action_size, :] = old_tensor.clone()
+                    new_target_dict[key][:old_action_size, :] = old_tensor.clone()
+                    noop_row = old_tensor[0, :]  # Action 0 = NOOP
+                    for i in range(old_action_size, self.action_size):
+                        noise = torch.randn_like(noop_row) * 0.01
+                        new_local_dict[key][i, :] = noop_row + noise
+                        new_target_dict[key][i, :] = noop_row + noise
+                elif 'bias' in key:
+                    # Bias shape: [action_size]
+                    new_local_dict[key][:old_action_size] = old_tensor.clone()
+                    new_target_dict[key][:old_action_size] = old_tensor.clone()
+                    noop_bias = old_tensor[0].item()
+                    for i in range(old_action_size, self.action_size):
+                        new_local_dict[key][i] = noop_bias + torch.randn(1).item() * 0.01
+                        new_target_dict[key][i] = noop_bias + torch.randn(1).item() * 0.01
+
+        self.qnetwork_local.load_state_dict(new_local_dict)
+        self.qnetwork_target.load_state_dict(new_target_dict)
+        print(f"[OK] Loaded weights from {old_action_size}-action model, expanded to {self.action_size} actions")

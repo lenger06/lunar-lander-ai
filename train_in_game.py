@@ -1,18 +1,20 @@
 """
-In-Game Training for Apollo Lander
+In-Game Training for Apollo Lander (v2 — Lateral RCS + 2-Stage Curriculum)
 
 Trains the AI agent using the game's exact Box2D physics (solver iterations 10,10)
 rather than the gym environment's (6,2). This eliminates physics mismatches between
 training and deployment.
 
-Includes a horizontal centering spring (Spring 5) to improve pad-targeting behavior.
+2-Stage Curriculum:
+  Stage 1: Stabilize + Hover (5 actions — rotation RCS only)
+  Stage 2: Full Landing with lateral RCS (7 actions — adds TRANSLATE_L/R)
 
 Usage:
     python train_in_game.py --seed 999                    # Headless (fast)
     python train_in_game.py --seed 999 --visualize        # Watch training live
-    python train_in_game.py --seed 999 --stage 3          # Start from stage 3
+    python train_in_game.py --seed 999 --stage 2          # Start from stage 2
     python train_in_game.py --seed 999 --episodes 2000    # Custom episode count
-    python train_in_game.py --seed 999 --single-stage --stage 4
+    python train_in_game.py --seed 999 --single-stage --stage 2
 """
 
 import argparse
@@ -104,14 +106,17 @@ class GameTrainingEnv:
     matching the actual game, instead of (6, 2).
     """
 
-    def __init__(self, render_mode=None, spring_computer=None, spawn_altitude=SPAWN_ALTITUDE):
+    def __init__(self, render_mode=None, spring_computer=None, spawn_altitude=SPAWN_ALTITUDE,
+                 num_actions=5, max_episode_steps=2000):
         self.render_mode = render_mode
         self.spawn_altitude = spawn_altitude
         self.spring_computer = spring_computer
+        self.num_actions = num_actions
+        self._max_episode_steps = max_episode_steps
 
         # Observation/action space dimensions (matches ApolloLanderEnv)
         self.state_size = 9
-        self.action_size = 5
+        self.action_size = num_actions
 
         # Gym-compatible space objects (for DoubleDQNAgent compatibility)
         class SimpleSpace:
@@ -150,10 +155,12 @@ class GameTrainingEnv:
         self.rcs_left_down = False
         self.rcs_right_up = False
         self.rcs_right_down = False
+        self.rcs_left_side = False
+        self.rcs_right_side = False
 
         # Episode tracking
         self.steps = 0
-        self.max_episode_steps = 2000
+        self.max_episode_steps = self._max_episode_steps
         self.prev_energy = None
 
         # Continuous angle tracking
@@ -240,6 +247,8 @@ class GameTrainingEnv:
         self.rcs_left_down = False
         self.rcs_right_up = False
         self.rcs_right_down = False
+        self.rcs_left_side = False
+        self.rcs_right_side = False
 
         obs = self._get_observation()
         info = self._get_info()
@@ -272,6 +281,8 @@ class GameTrainingEnv:
         self.rcs_left_down = False
         self.rcs_right_up = False
         self.rcs_right_down = False
+        self.rcs_left_side = False
+        self.rcs_right_side = False
 
         if self.lander is None:
             return
@@ -325,6 +336,26 @@ class GameTrainingEnv:
                 ascent.ApplyForce(thrust_dir * RCS_THRUST, left_pod_world, True)
                 self.rcs_left_up = True
 
+                self.fuel = max(0.0, self.fuel - FUEL_RCS_RATE)
+
+        elif action == 5 and self.num_actions >= 7:
+            # TRANSLATE_L: Both pods fire to push craft LEFT
+            if self.fuel > 0:
+                thrust_dir = ascent.GetWorldVector(b2Vec2(-1.0, 0.0))
+                ascent.ApplyForce(thrust_dir * RCS_THRUST, left_pod_world, True)
+                ascent.ApplyForce(thrust_dir * RCS_THRUST, right_pod_world, True)
+                self.rcs_left_side = True
+                self.rcs_right_side = True
+                self.fuel = max(0.0, self.fuel - FUEL_RCS_RATE)
+
+        elif action == 6 and self.num_actions >= 7:
+            # TRANSLATE_R: Both pods fire to push craft RIGHT
+            if self.fuel > 0:
+                thrust_dir = ascent.GetWorldVector(b2Vec2(1.0, 0.0))
+                ascent.ApplyForce(thrust_dir * RCS_THRUST, left_pod_world, True)
+                ascent.ApplyForce(thrust_dir * RCS_THRUST, right_pod_world, True)
+                self.rcs_left_side = True
+                self.rcs_right_side = True
                 self.fuel = max(0.0, self.fuel - FUEL_RCS_RATE)
 
         # Always-on engine
@@ -441,7 +472,7 @@ class GameTrainingEnv:
             lander_x=pos.x, lander_y=pos.y,
             angle=angle, angular_vel=angular_vel,
             pad_x=pad_x, pad_y=pad_y,
-            vel_y=vel.y, terrain_height=terrain_height
+            vel_y=vel.y, vel_x=vel.x, terrain_height=terrain_height
         )
 
         # Determine terminal info
@@ -453,7 +484,8 @@ class GameTrainingEnv:
             pad_mult = self.target_pad.get("mult", 1)
 
         rcs_active = (self.rcs_left_up or self.rcs_left_down or
-                      self.rcs_right_up or self.rcs_right_down)
+                      self.rcs_right_up or self.rcs_right_down or
+                      self.rcs_left_side or self.rcs_right_side)
 
         reward = self.spring_computer.compute_reward(
             energy_old=self.prev_energy,
@@ -508,8 +540,12 @@ class GameTrainingEnv:
             return None
 
         if self.screen is None:
-            pygame.init()
-            pygame.font.init()
+            if not pygame.get_init():
+                pygame.init()
+            if not pygame.display.get_init():
+                pygame.display.init()
+            if not pygame.font.get_init():
+                pygame.font.init()
             self.font = pygame.font.Font(None, 24)
             self.font_large = pygame.font.Font(None, 36)
 
@@ -564,7 +600,7 @@ class GameTrainingEnv:
                 is_ascent=True, main_on=False,
                 tl=self.rcs_left_up, bl=self.rcs_left_down,
                 tr=self.rcs_right_up, br=self.rcs_right_down,
-                sl=False, sr=False,
+                sl=self.rcs_left_side, sr=self.rcs_right_side,
                 gimbal_angle_deg=0.0, cam_x=cam_x,
                 screen_width=SCREEN_WIDTH, screen_height=SCREEN_HEIGHT,
                 cam_y=cam_y,
@@ -664,10 +700,10 @@ class GameTrainingEnv:
             self.screen.blit(arrow_rendered, (arrow_x - 40 if rel_x > 0 else arrow_x, arrow_y))
 
     def close(self):
-        """Clean up resources."""
+        """Clean up rendering resources without tearing down pygame globally."""
         if self.screen is not None:
             import pygame
-            pygame.quit()
+            pygame.display.quit()
             self.screen = None
             self.clock = None
             self.font = None
@@ -675,94 +711,103 @@ class GameTrainingEnv:
 
 
 # ============================================================================
-# Curriculum wrapper (same stage logic as train_curriculum.py)
+# 2-Stage Curriculum wrapper (Lateral RCS redesign)
 # ============================================================================
 
 class CurriculumGameEnv:
-    """Curriculum wrapper around GameTrainingEnv with stage-specific conditions."""
+    """2-stage curriculum wrapper around GameTrainingEnv.
 
-    ACTION_NAMES = {0: "NOOP", 1: "RCS_L", 2: "THR_UP", 3: "THR_DN", 4: "RCS_R"}
+    Stage 1: Stabilize + Hover (5 actions — rotation RCS only)
+    Stage 2: Full Landing with lateral RCS (7 actions — adds TRANSLATE_L/R)
+    """
+
+    ACTION_NAMES_5 = {0: "NOOP", 1: "RCS_L", 2: "THR_UP", 3: "THR_DN", 4: "RCS_R"}
+    ACTION_NAMES_7 = {0: "NOOP", 1: "RCS_L", 2: "THR_UP", 3: "THR_DN", 4: "RCS_R",
+                      5: "TR_L", 6: "TR_R"}
 
     def __init__(self, stage=1, render_mode=None):
-        # Spring configs per stage (with k_centering for horizontal targeting)
+        # Spring configs per stage (new parameter names)
         spring_configs = {
-            1: {'k_rotation': 25.0, 'k_pad': 0.0, 'k_centering': 0.0,
-                'c_damping': 40.0, 'c_descent': 0.0, 'c_ascend': 0.0,
-                'descent_max_rate': 0.0, 'pad_rest_length': 15.0},
-            2: {'k_rotation': 22.0, 'k_pad': 0.5, 'k_centering': 0.0,
-                'c_damping': 35.0, 'c_descent': 2.0, 'c_ascend': 4.0,
-                'descent_max_rate': 0.0, 'pad_rest_length': 15.0},
-            3: {'k_rotation': 20.0, 'k_pad': 1.5, 'k_centering': 0.8,
-                'c_damping': 30.0, 'c_descent': 3.0, 'c_ascend': 5.0,
-                'descent_max_rate': 2.5, 'pad_rest_length': 15.0},
-            4: {'k_rotation': 20.0, 'k_pad': 1.5, 'k_centering': 1.0,
-                'c_damping': 30.0, 'c_descent': 3.0, 'c_ascend': 5.0,
-                'descent_max_rate': 2.5, 'pad_rest_length': 15.0},
+            1: {'k_rotation': 25.0, 'k_horizontal': 0.0, 'k_vertical': 0.0,
+                'c_angular': 40.0, 'c_descent': 2.0, 'c_ascend': 4.0,
+                'c_horizontal_vel': 0.0, 'descent_max_rate': 0.0,
+                'proximity_gain': 0.0},
+            2: {'k_rotation': 20.0, 'k_horizontal': 3.0, 'k_vertical': 1.2,
+                'c_angular': 30.0, 'c_descent': 3.0, 'c_ascend': 5.0,
+                'c_horizontal_vel': 1.0, 'descent_max_rate': 2.5,
+                'proximity_gain': 5.0},
+            3: {'k_rotation': 20.0, 'k_horizontal': 3.0, 'k_vertical': 2.0,
+                'c_angular': 30.0, 'c_descent': 5.0, 'c_ascend': 5.0,
+                'c_horizontal_vel': 1.0, 'descent_max_rate': 2.5,
+                'proximity_gain': 0.0, 'vertical_log_scale': 50.0,
+                'time_penalty': 0.3},
         }
         sc = spring_configs[stage]
 
         computer = SpringRewardComputer(
             k_rotation=sc['k_rotation'],
-            k_pad=sc['k_pad'],
-            k_centering=sc['k_centering'],
-            c_damping=sc['c_damping'],
+            k_horizontal=sc['k_horizontal'],
+            k_vertical=sc['k_vertical'],
+            c_angular=sc['c_angular'],
             c_descent=sc['c_descent'],
             c_ascend=sc['c_ascend'],
+            c_horizontal_vel=sc['c_horizontal_vel'],
             descent_max_rate=sc['descent_max_rate'],
-            pad_rest_length=sc['pad_rest_length'],
+            proximity_gain=sc.get('proximity_gain', 0.0),
+            vertical_log_scale=sc.get('vertical_log_scale', 0.0),
+            time_penalty=sc.get('time_penalty', 0.1),
             spawn_altitude=SPAWN_ALTITUDE,
         )
 
-        self.env = GameTrainingEnv(render_mode=render_mode, spring_computer=computer)
+        num_actions = 5 if stage == 1 else 7
+        max_steps_per_stage = {1: 1500, 2: 2000, 3: 3000}
+        self.env = GameTrainingEnv(render_mode=render_mode, spring_computer=computer,
+                                   num_actions=num_actions,
+                                   max_episode_steps=max_steps_per_stage.get(stage, 2000))
         self.stage = stage
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space
+        self.action_names = self.ACTION_NAMES_5 if stage == 1 else self.ACTION_NAMES_7
 
-        # Stage-specific parameters (identical to train_curriculum.py)
+        # Stage 3 uses same reset as stage 2 (no constrained initial conditions)
+
+        # Stage-specific parameters
         self.stage_configs = {
             1: {
                 'max_angle': np.pi/4,
-                'max_steps': 500,
-                'success_angle': 0.26,
+                'max_steps': 1500,
+                'success_angle': 0.26,          # ~15 degrees
                 'success_angular_vel': 0.3,
+                'success_vel_y': 1.5,
                 'success_reward': 200.0,
-                'graduation_threshold': 70.0,
+                'graduation_threshold': 80.0,
                 'min_episodes': 200,
+                'sustained_steps': 50,
             },
             2: {
                 'max_angle': np.pi/3,
-                'max_steps': 800,
-                'success_angle': 0.17,
-                'success_vel_y': 1.0,
-                'success_angular_vel': 0.2,
-                'success_reward': 250.0,
-                'graduation_threshold': 65.0,
-                'min_episodes': 200,
-            },
-            3: {
-                'max_angle': np.pi/4,
-                'max_steps': 1500,
-                'success_angle': 0.17,
-                'success_vel_y': 2.0,
-                'success_dist_x': 10.0,
-                'success_angular_vel': 0.2,
-                'success_altitude': 30.0,
-                'success_reward': 300.0,
-                'graduation_threshold': 40.0,
-                'min_episodes': 300,
-            },
-            4: {
-                'max_angle': np.pi/3,
                 'max_steps': 2000,
-                'success_angle': 0.26,
+                'success_angle': 0.26,          # ~15 degrees
                 'success_vel_y': 2.0,
                 'success_dist_x': 15.0,
                 'success_angular_vel': 0.3,
                 'success_altitude': 20.0,
-                'success_reward': 400.0,
                 'approach_reward': 5.0,
                 'graduation_threshold': 70.0,
-                'min_episodes': 500,
+                'min_episodes': 1000,
+            },
+            3: {
+                'max_angle': np.pi/3,
+                'max_steps': 3000,
+                'success_angle': 0.26,          # ~15 degrees
+                'success_vel_y': 2.0,
+                'success_dist_x': 15.0,
+                'success_angular_vel': 0.3,
+                'success_altitude': 20.0,
+                'approach_reward': 5.0,
+                'landing_required': True,
+                'graduation_threshold': 50.0,
+                'min_episodes': 1500,
             }
         }
 
@@ -770,8 +815,8 @@ class CurriculumGameEnv:
         obs, info = self.env.reset(seed=seed)
         config = self.stage_configs[self.stage]
 
-        # Adjust initial conditions for stage
-        if self.stage < 4:
+        # Stage 1: constrained initial conditions for stabilization learning
+        if self.stage == 1:
             max_angle = config['max_angle']
             initial_angle = float(self.env.np_random.uniform(-max_angle, max_angle))
 
@@ -805,7 +850,7 @@ class CurriculumGameEnv:
         self.steps = 0
         self.max_steps = config['max_steps']
         self._logged_success = False
-        self._action_counts = {i: 0 for i in range(5)}
+        self._action_counts = {i: 0 for i in range(self.env.num_actions)}
         self._stable_steps = 0
 
         return self.env._get_observation(), info
@@ -827,111 +872,55 @@ class CurriculumGameEnv:
             terrain_h = get_terrain_height_at(pos.x, self.env.terrain_pts)
             altitude = pos.y - terrain_h
 
-            action_name = self.ACTION_NAMES.get(action, f"?{action}")
+            action_name = self.action_names.get(action, f"?{action}")
             throttle_pct = int(self.env.throttle * 100)
             total_actions = sum(self._action_counts.values())
-            action_dist = " ".join([f"{self.ACTION_NAMES[i]}:{100*self._action_counts[i]//total_actions}%"
-                                    for i in range(5) if self._action_counts[i] > 0])
+            action_dist = " ".join([f"{self.action_names[i]}:{100*self._action_counts[i]//total_actions}%"
+                                    for i in range(self.env.num_actions) if self._action_counts[i] > 0])
+
+            target_x = (self.env.target_pad["x1"] + self.env.target_pad["x2"]) / 2.0
+            dist_x = pos.x - target_x
 
             print(f"  [S{self.steps:4d}] Act={action_name:5s} | "
                   f"Ang={angle_deg:+6.1f} AngV={angular_vel:+5.2f} | "
-                  f"Alt={altitude:5.1f}m VelY={vel.y:+5.1f} | "
+                  f"Alt={altitude:5.1f}m VelY={vel.y:+5.1f} DistX={dist_x:+6.1f} | "
                   f"Thr={throttle_pct}% | {action_dist}")
 
         config = self.stage_configs[self.stage]
-        SUSTAINED_STEPS = 30
 
         # Stage-specific success checks
         if self.stage == 1:
+            sustained_steps = config.get('sustained_steps', 50)
             angle = abs(self.env.lander.descent_stage.angle)
             angular_vel = abs(self.env.lander.descent_stage.angularVelocity)
-            success_ang_vel = config.get('success_angular_vel', 0.2)
+            vel_y = abs(self.env.lander.descent_stage.linearVelocity.y)
+            success_ang_vel = config.get('success_angular_vel', 0.3)
+            success_vel_y = config.get('success_vel_y', 1.5)
 
-            if angle < config['success_angle'] and angular_vel < success_ang_vel:
+            if (angle < config['success_angle'] and
+                    angular_vel < success_ang_vel and
+                    vel_y < success_vel_y):
                 self._stable_steps += 1
                 reward += config['success_reward'] / 100.0
                 info['stage_success'] = True
                 if not self._logged_success:
                     print(f"  [STABLE] Ep {self.env.episode_count} Step {self.steps}: "
-                          f"Angle={math.degrees(angle):.1f} AngVel={angular_vel:.2f} (streak: {self._stable_steps})")
+                          f"Angle={math.degrees(angle):.1f} AngVel={angular_vel:.2f} "
+                          f"VelY={vel_y:.2f} (streak: {self._stable_steps})")
                     self._logged_success = True
             else:
                 self._stable_steps = 0
                 self._logged_success = False
 
-            if self._stable_steps >= SUSTAINED_STEPS:
+            if self._stable_steps >= sustained_steps:
                 reward += config['success_reward']
                 terminated = True
                 info['stage_success'] = True
                 print(f"  [GRADUATED] Ep {self.env.episode_count} Step {self.steps}: "
-                      f"SUSTAINED STABILITY for {SUSTAINED_STEPS} steps!")
+                      f"SUSTAINED STABILITY+HOVER for {sustained_steps} steps!")
 
         elif self.stage == 2:
-            angle = abs(self.env.lander.descent_stage.angle)
-            vel_y = abs(self.env.lander.descent_stage.linearVelocity.y)
-            angular_vel = abs(self.env.lander.descent_stage.angularVelocity)
-            success_ang_vel = config.get('success_angular_vel', 0.2)
-
-            if (angle < config['success_angle'] and
-                    vel_y < config['success_vel_y'] and
-                    angular_vel < success_ang_vel):
-                self._stable_steps += 1
-                reward += config['success_reward'] / 100.0
-                info['stage_success'] = True
-                if not self._logged_success:
-                    print(f"  [STABLE] Ep {self.env.episode_count} Step {self.steps}: "
-                          f"HOVERING | Angle={math.degrees(angle):.1f} VelY={vel_y:.2f} (streak: {self._stable_steps})")
-                    self._logged_success = True
-            else:
-                self._stable_steps = 0
-                self._logged_success = False
-
-            if self._stable_steps >= SUSTAINED_STEPS:
-                reward += config['success_reward']
-                terminated = True
-                info['stage_success'] = True
-                print(f"  [GRADUATED] Ep {self.env.episode_count} Step {self.steps}: "
-                      f"SUSTAINED HOVER for {SUSTAINED_STEPS} steps!")
-
-        elif self.stage == 3:
-            angle = abs(self.env.lander.descent_stage.angle)
-            vel_y = abs(self.env.lander.descent_stage.linearVelocity.y)
-            angular_vel = abs(self.env.lander.descent_stage.angularVelocity)
-            success_ang_vel = config.get('success_angular_vel', 0.2)
-
-            pos = self.env.lander.descent_stage.position
-            target_x = (self.env.target_pad["x1"] + self.env.target_pad["x2"]) / 2.0
-            dist_x = abs(pos.x - target_x)
-            terrain_h = get_terrain_height_at(pos.x, self.env.terrain_pts)
-            altitude = pos.y - terrain_h
-            max_alt = config.get('success_altitude', 999.0)
-
-            if (angle < config['success_angle'] and
-                    vel_y < config['success_vel_y'] and
-                    dist_x < config['success_dist_x'] and
-                    angular_vel < success_ang_vel and
-                    altitude < max_alt):
-                self._stable_steps += 1
-                reward += config['success_reward'] / 100.0
-                info['stage_success'] = True
-                if not self._logged_success:
-                    print(f"  [STABLE] Ep {self.env.episode_count} Step {self.steps}: "
-                          f"POSITIONED | Angle={math.degrees(angle):.1f} DistX={dist_x:.1f}m Alt={altitude:.1f}m (streak: {self._stable_steps})")
-                    self._logged_success = True
-            else:
-                self._stable_steps = 0
-                self._logged_success = False
-
-            if self._stable_steps >= SUSTAINED_STEPS:
-                reward += config['success_reward']
-                terminated = True
-                info['stage_success'] = True
-                print(f"  [GRADUATED] Ep {self.env.episode_count} Step {self.steps}: "
-                      f"SUSTAINED POSITION for {SUSTAINED_STEPS} steps!")
-
-        elif self.stage == 4:
-            # Stage 4: small approach bonus + large landing reward
-            # Approach bonus is kept small so landing is always more attractive
+            # Stage 2: approach bonus + large landing reward from spring computer
             angle = abs(self.env.lander.descent_stage.angle)
             vel_y = self.env.lander.descent_stage.linearVelocity.y
             angular_vel = abs(self.env.lander.descent_stage.angularVelocity)
@@ -944,7 +933,7 @@ class CurriculumGameEnv:
             altitude = pos.y - terrain_h
             max_alt = config.get('success_altitude', 20.0)
 
-            # Small approach bonus: guides agent to correct position
+            # Approach bonus: guides agent toward landing configuration
             if (angle < config['success_angle'] and
                     abs(vel_y) < config['success_vel_y'] and
                     dist_x < config['success_dist_x'] and
@@ -963,6 +952,44 @@ class CurriculumGameEnv:
                 self._stable_steps = 0
                 self._logged_success = False
 
+        elif self.stage == 3:
+            # Stage 3: same approach bonus as stage 2, but success = actual landing
+            angle = abs(self.env.lander.descent_stage.angle)
+            vel_y = self.env.lander.descent_stage.linearVelocity.y
+            angular_vel = abs(self.env.lander.descent_stage.angularVelocity)
+            success_ang_vel = config.get('success_angular_vel', 0.3)
+
+            pos = self.env.lander.descent_stage.position
+            target_x = (self.env.target_pad["x1"] + self.env.target_pad["x2"]) / 2.0
+            dist_x = abs(pos.x - target_x)
+            terrain_h = get_terrain_height_at(pos.x, self.env.terrain_pts)
+            altitude = pos.y - terrain_h
+            max_alt = config.get('success_altitude', 20.0)
+
+            # Approach bonus (same as stage 2)
+            if (angle < config['success_angle'] and
+                    abs(vel_y) < config['success_vel_y'] and
+                    dist_x < config['success_dist_x'] and
+                    angular_vel < success_ang_vel and
+                    altitude < max_alt):
+                approach_reward = config.get('approach_reward', 5.0)
+                reward += approach_reward
+                if not self._logged_success:
+                    print(f"  [APPROACH] Ep {self.env.episode_count} Step {self.steps}: "
+                          f"ON APPROACH | Angle={math.degrees(angle):.1f} DistX={dist_x:.1f}m "
+                          f"Alt={altitude:.1f}m VelY={vel_y:.1f}")
+                    self._logged_success = True
+            else:
+                self._logged_success = False
+
+            # Success only on actual landing
+            landing_status = info.get('landing_status', 'flying')
+            if landing_status == 'landed':
+                info['stage_success'] = True
+                print(f"  [LANDED] Ep {self.env.episode_count} Step {self.steps}: "
+                      f"TOUCHDOWN | Angle={math.degrees(angle):.1f} DistX={dist_x:.1f}m "
+                      f"Alt={altitude:.1f}m VelY={vel_y:.1f}")
+
         # Truncate at max steps
         if self.steps >= self.max_steps:
             truncated = True
@@ -977,7 +1004,7 @@ class CurriculumGameEnv:
 
 
 # ============================================================================
-# Training functions (mirrors train_curriculum.py)
+# Training functions (2-stage curriculum with lateral RCS)
 # ============================================================================
 
 def train_stage(stage, seed, episodes, save_dir='models', visualize=False,
@@ -985,19 +1012,19 @@ def train_stage(stage, seed, episodes, save_dir='models', visualize=False,
     """Train a single curriculum stage using game physics."""
 
     print(f"\n{'='*70}")
-    print(f"IN-GAME CURRICULUM STAGE {stage} - SEED {seed}")
+    print(f"LATERAL RCS CURRICULUM STAGE {stage} - SEED {seed}")
     print(f"{'='*70}")
 
     stage_names = {
-        1: "STABILIZATION (get upright)",
-        2: "HOVER (upright + arrest descent)",
-        3: "POSITION (hover over pad + centering)",
-        4: "FULL LANDING (complete task + centering)"
+        1: "STABILIZE + HOVER (5 actions — rotation RCS only)",
+        2: "APPROACH PAD (7 actions — with lateral RCS)",
+        3: "PRECISION LANDING (7 actions — touchdown required)"
     }
+    num_actions = 5 if stage == 1 else 7
     print(f"Stage: {stage_names[stage]}")
+    print(f"Actions: {num_actions}")
     print(f"Episodes: {episodes}")
     print(f"Physics: Game-identical (solver 10/10)")
-    print(f"Centering: {'Spring 5 active' if stage >= 3 else 'Not yet'}")
     print("="*70)
 
     os.makedirs(save_dir, exist_ok=True)
@@ -1007,9 +1034,8 @@ def train_stage(stage, seed, episodes, save_dir='models', visualize=False,
     # Stage-specific agent hyperparameters
     agent_configs = {
         1: {'lr': 5e-4, 'buffer_size': int(1e5)},
-        2: {'lr': 5e-4, 'buffer_size': int(1e5)},
-        3: {'lr': 5e-4, 'buffer_size': int(1e5)},
-        4: {'lr': 3e-4, 'buffer_size': int(2e5)},
+        2: {'lr': 3e-4, 'buffer_size': int(2e5)},
+        3: {'lr': 1e-4, 'buffer_size': int(3e5)},
     }
     ac = agent_configs[stage]
 
@@ -1027,17 +1053,22 @@ def train_stage(stage, seed, episodes, save_dir='models', visualize=False,
     )
 
     # Load weights from previous stage
-    if load_previous and stage > 1:
-        prev_path = os.path.join(save_dir, f'ingame_stage{stage-1}_seed{seed}_best.pth')
+    if load_previous and stage == 2:
+        # Stage 2 loads from Stage 1 with expanded action space (5 -> 7)
+        prev_path = os.path.join(save_dir, f'lateral_stage1_seed{seed}_best.pth')
+        if os.path.exists(prev_path):
+            agent.load_with_expanded_actions(prev_path, old_action_size=5)
+            print(f"Loaded Stage 1 weights with 5->7 action expansion")
+        else:
+            print(f"WARNING: No Stage 1 model found at {prev_path}")
+    elif load_previous and stage == 3:
+        # Stage 3 loads from Stage 2 (same action space, 7 -> 7)
+        prev_path = os.path.join(save_dir, f'lateral_stage2_seed{seed}_best.pth')
         if os.path.exists(prev_path):
             agent.load(prev_path)
-            print(f"Loaded weights from in-game stage {stage-1}")
+            print(f"Loaded Stage 2 weights (7 actions)")
         else:
-            # Fall back to curriculum models
-            prev_path = os.path.join(save_dir, f'curriculum_stage{stage-1}_seed{seed}_best.pth')
-            if os.path.exists(prev_path):
-                agent.load(prev_path)
-                print(f"Loaded weights from curriculum stage {stage-1} (fallback)")
+            print(f"WARNING: No Stage 2 model found at {prev_path}")
 
     scores = []
     scores_window = deque(maxlen=100)
@@ -1045,9 +1076,8 @@ def train_stage(stage, seed, episodes, save_dir='models', visualize=False,
 
     eps_configs = {
         1: {'start': 1.0, 'end': 0.05, 'decay': 0.997},
-        2: {'start': 0.5, 'end': 0.05, 'decay': 0.997},
-        3: {'start': 0.4, 'end': 0.03, 'decay': 0.996},
-        4: {'start': 0.15, 'end': 0.02, 'decay': 0.998},
+        2: {'start': 0.3, 'end': 0.02, 'decay': 0.998},
+        3: {'start': 0.15, 'end': 0.01, 'decay': 0.999},
     }
     ec = eps_configs[stage]
     eps = ec['start']
@@ -1087,7 +1117,7 @@ def train_stage(stage, seed, episodes, save_dir='models', visualize=False,
         # Save best model
         if episode >= 50 and success_rate > best_success_rate:
             best_success_rate = success_rate
-            agent.save(os.path.join(save_dir, f'ingame_stage{stage}_seed{seed}_best.pth'))
+            agent.save(os.path.join(save_dir, f'lateral_stage{stage}_seed{seed}_best.pth'))
 
         if episode % 50 == 0:
             elapsed = time.time() - start_time
@@ -1109,7 +1139,7 @@ def train_stage(stage, seed, episodes, save_dir='models', visualize=False,
             break
 
     # Save final model
-    agent.save(os.path.join(save_dir, f'ingame_stage{stage}_seed{seed}_final.pth'))
+    agent.save(os.path.join(save_dir, f'lateral_stage{stage}_seed{seed}_final.pth'))
     env.close()
 
     elapsed = time.time() - start_time
@@ -1136,28 +1166,31 @@ def train_stage(stage, seed, episodes, save_dir='models', visualize=False,
 
 def train_full_curriculum(seed, episodes_per_stage=1000, save_dir='models',
                           visualize=False, start_stage=1):
-    """Train through all curriculum stages using game physics."""
+    """Train through both curriculum stages using game physics."""
 
     print("\n" + "="*70)
-    print("IN-GAME FULL CURRICULUM TRAINING")
+    print("LATERAL RCS 3-STAGE CURRICULUM TRAINING")
     print("="*70)
     print(f"Seed: {seed}")
     print(f"Episodes per stage: {episodes_per_stage}")
     print(f"Starting from stage: {start_stage}")
     print(f"Physics: Game-identical (solver 10/10)")
+    print(f"Stage 1: Stabilize+Hover (5 actions)")
+    print(f"Stage 2: Approach Pad with lateral RCS (7 actions)")
+    print(f"Stage 3: Precision Landing (7 actions — touchdown required)")
     print("="*70)
 
     all_results = []
     total_start = time.time()
 
-    for stage in range(start_stage, 5):
+    for stage in range(start_stage, 4):
         result = train_stage(
             stage=stage,
             seed=seed,
             episodes=episodes_per_stage,
             save_dir=save_dir,
             visualize=visualize,
-            load_previous=(stage > start_stage)
+            load_previous=(stage > start_stage or stage == 2)
         )
         all_results.append(result)
 
@@ -1168,20 +1201,22 @@ def train_full_curriculum(seed, episodes_per_stage=1000, save_dir='models',
     total_time = time.time() - total_start
 
     print("\n" + "="*70)
-    print("IN-GAME CURRICULUM TRAINING SUMMARY")
+    print("LATERAL RCS 3-STAGE CURRICULUM TRAINING SUMMARY")
     print("="*70)
     for r in all_results:
-        print(f"  Stage {r['stage']}: {r['best_success_rate']:.1f}% success in {r['episodes']} episodes")
+        actions = 5 if r['stage'] == 1 else 7
+        print(f"  Stage {r['stage']} ({actions} actions): {r['best_success_rate']:.1f}% success in {r['episodes']} episodes")
     print(f"\nTotal training time: {total_time/60:.1f} minutes")
     print("="*70)
 
     # Save summary
-    summary_path = os.path.join(save_dir, f'ingame_summary_seed{seed}.json')
+    summary_path = os.path.join(save_dir, f'lateral_summary_seed{seed}.json')
     with open(summary_path, 'w') as f:
         json.dump({
             'seed': seed,
             'total_time_minutes': total_time / 60,
             'physics': 'game_identical_10_10',
+            'curriculum': '3_stage_lateral_rcs',
             'results': all_results
         }, f, indent=2)
 
@@ -1189,9 +1224,9 @@ def train_full_curriculum(seed, episodes_per_stage=1000, save_dir='models',
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='In-game training for Apollo Lander')
+    parser = argparse.ArgumentParser(description='Lateral RCS training for Apollo Lander')
     parser.add_argument('--seed', type=int, default=999, help='Random seed')
-    parser.add_argument('--stage', type=int, default=1, help='Start from this stage (1-4)')
+    parser.add_argument('--stage', type=int, default=1, help='Start from this stage (1-3)')
     parser.add_argument('--episodes', type=int, default=1000, help='Episodes per stage')
     parser.add_argument('--single-stage', action='store_true', help='Only train specified stage')
     parser.add_argument('--visualize', action='store_true', help='Watch training live')

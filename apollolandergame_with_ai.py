@@ -52,21 +52,28 @@ except ImportError:
 
 
 def find_model(seed, save_dir='models'):
-    """Find best available model for a seed, preferring in-game stage 4."""
+    """Find best available model for a seed, preferring lateral RCS 7-action models."""
     candidates = [
-        os.path.join(save_dir, f'ingame_stage4_seed{seed}_best.pth'),
-        os.path.join(save_dir, f'ingame_stage4_seed{seed}_final.pth'),
-        os.path.join(save_dir, f'ingame_stage3_seed{seed}_best.pth'),
-        os.path.join(save_dir, f'curriculum_stage4_seed{seed}_best.pth'),
-        os.path.join(save_dir, f'curriculum_stage4_seed{seed}_final.pth'),
-        os.path.join(save_dir, f'curriculum_stage3_seed{seed}_best.pth'),
-        os.path.join(save_dir, f'apollo_ddqn_seed{seed}_best.pth'),
-        os.path.join(save_dir, f'apollo_ddqn_seed{seed}_final.pth'),
+        # Stage 3 precision landing models (7 actions) — preferred
+        (os.path.join(save_dir, f'lateral_stage3_seed{seed}_best.pth'), 7),
+        (os.path.join(save_dir, f'lateral_stage3_seed{seed}_final.pth'), 7),
+        # Stage 2 approach models (7 actions) — fallback
+        (os.path.join(save_dir, f'lateral_stage2_seed{seed}_best.pth'), 7),
+        (os.path.join(save_dir, f'lateral_stage2_seed{seed}_final.pth'), 7),
+        # Legacy 5-action models — fallback
+        (os.path.join(save_dir, f'ingame_stage4_seed{seed}_best.pth'), 5),
+        (os.path.join(save_dir, f'ingame_stage4_seed{seed}_final.pth'), 5),
+        (os.path.join(save_dir, f'ingame_stage3_seed{seed}_best.pth'), 5),
+        (os.path.join(save_dir, f'curriculum_stage4_seed{seed}_best.pth'), 5),
+        (os.path.join(save_dir, f'curriculum_stage4_seed{seed}_final.pth'), 5),
+        (os.path.join(save_dir, f'curriculum_stage3_seed{seed}_best.pth'), 5),
+        (os.path.join(save_dir, f'apollo_ddqn_seed{seed}_best.pth'), 5),
+        (os.path.join(save_dir, f'apollo_ddqn_seed{seed}_final.pth'), 5),
     ]
-    for path in candidates:
+    for path, action_size in candidates:
         if os.path.exists(path):
-            return path
-    return None
+            return path, action_size
+    return None, 5
 
 # -------------------------------------------------
 # Config
@@ -144,6 +151,7 @@ class GameState:
         # AI autopilot state
         self.ai_enabled = False
         self.ai_agent = None
+        self.ai_action_size = 5
 
         # AI angle tracking (continuous, matches training env)
         self.ai_prev_raw_angle = 0.0
@@ -161,25 +169,26 @@ class GameState:
         self.ai_cumulative_angle = 0.0
 
 def load_ai_agent(model_path=None, seed=999, save_dir='models'):
-    """Load the trained AI agent (9-dim state, 5-action always-on engine model)."""
+    """Load the trained AI agent (9-dim state, 5 or 7 action always-on engine model)."""
     if not AI_AVAILABLE:
-        return None
+        return None, 5
 
+    action_size = 5
     if model_path is None:
-        model_path = find_model(seed, save_dir)
+        model_path, action_size = find_model(seed, save_dir)
 
     if model_path is None or not os.path.exists(model_path):
         print(f"[!] No AI model found (seed={seed}, dir={save_dir})")
-        return None
+        return None, 5
 
     try:
-        agent = DoubleDQNAgent(state_size=9, action_size=5, seed=seed)
+        agent = DoubleDQNAgent(state_size=9, action_size=action_size, seed=seed)
         agent.load(model_path)
-        print(f"[OK] AI agent loaded from {model_path}")
-        return agent
+        print(f"[OK] AI agent loaded from {model_path} ({action_size} actions)")
+        return agent, action_size
     except Exception as e:
         print(f"[!] Failed to load AI agent: {e}")
-        return None
+        return None, 5
 
 def get_ai_action(agent, state):
     """Get action from AI agent given current state."""
@@ -270,7 +279,7 @@ def main():
 
     # Try to load AI agent
     if AI_AVAILABLE:
-        game_state.ai_agent = load_ai_agent()
+        game_state.ai_agent, game_state.ai_action_size = load_ai_agent()
         if game_state.ai_agent is not None:
             print("\n" + "="*60)
             print("AI AUTOPILOT READY")
@@ -439,9 +448,10 @@ def main():
         rcs_right_up = False
         rcs_right_down = False
         rcs_right_side = False
+        game_state._ai_translate = 0  # -1=LEFT, 0=none, 1=RIGHT
 
         if game_state.ai_enabled and game_state.ai_agent is not None:
-            # AI CONTROL MODE (5-action always-on engine model)
+            # AI CONTROL MODE (5 or 7 action always-on engine model)
             target_x = (target_pad["x1"] + target_pad["x2"]) / 2.0
             target_y = target_pad["y"]
             state = lander_state_to_gym_state(lander, target_x, target_y, descent_throttle, game_state)
@@ -450,17 +460,16 @@ def main():
             # Engine is ALWAYS ON at current throttle (matches training env)
             main_thrust = True
 
-            # Map 5-action space to game controls:
+            # Map action space to game controls:
             # 0: NOOP (engine continues at current throttle, no RCS)
             # 1: RCS_L - Rotate LEFT (coupled: left pod down + right pod up)
             # 2: THR_UP - Increase throttle by 5%
             # 3: THR_DOWN - Decrease throttle by 5%
             # 4: RCS_R - Rotate RIGHT (coupled: right pod down + left pod up)
+            # 5: TRANSLATE_L - Both pods fire to push craft LEFT (7-action only)
+            # 6: TRANSLATE_R - Both pods fire to push craft RIGHT (7-action only)
             if action == 1:
                 # RCS_L: rotate left
-                # Training env applies force DOWN at left, UP at right
-                # Game booleans name the THRUSTER (flame) direction, not force direction
-                # So we need _up (flame up = force down) and _down (flame down = force up)
                 rcs_left_up = True     # flame UP at left pod → force DOWN at left
                 rcs_right_down = True  # flame DOWN at right pod → force UP at right
             elif action == 2:
@@ -471,9 +480,16 @@ def main():
                 descent_throttle = max(0.1, descent_throttle - 0.05)
             elif action == 4:
                 # RCS_R: rotate right
-                # Training env applies force DOWN at right, UP at left
                 rcs_right_up = True    # flame UP at right pod → force DOWN at right
                 rcs_left_down = True   # flame DOWN at left pod → force UP at left
+            elif action == 5:
+                # TRANSLATE_L: both pods fire LEFT force (same as training env)
+                # Can't use rcs_left_side/rcs_right_side — game fires them inward,
+                # which would cancel out. Instead apply forces directly below.
+                game_state._ai_translate = -1  # LEFT
+            elif action == 6:
+                # TRANSLATE_R: both pods fire RIGHT force (same as training env)
+                game_state._ai_translate = 1   # RIGHT
         else:
             # MANUAL CONTROL MODE - Numpad controls
             main_thrust = keys[pygame.K_SPACE]
@@ -644,6 +660,24 @@ def main():
             # Each thruster uses 0.01 fuel units per frame
             if thrusters_firing > 0:
                 descent_fuel = max(0.0, descent_fuel - 0.01 * thrusters_firing)
+
+            # AI lateral translation (actions 5/6) — apply both pod forces in same direction
+            if game_state._ai_translate != 0 and descent_fuel > 0:
+                translate_dir = float(game_state._ai_translate)  # -1.0 or 1.0
+                thrust_dir_local = b2Vec2(translate_dir, 0.0)
+                thrust_dir_world = lander.ascent_stage.GetWorldVector(thrust_dir_local)
+                lander.ascent_stage.ApplyForce(
+                    thrust_dir_world * rcs_thrust_per_thruster,
+                    left_pod_world, True
+                )
+                lander.ascent_stage.ApplyForce(
+                    thrust_dir_world * rcs_thrust_per_thruster,
+                    right_pod_world, True
+                )
+                # Set side thruster flags for visualization
+                rcs_left_side = True
+                rcs_right_side = True
+                descent_fuel = max(0.0, descent_fuel - 0.02)
 
 
         # Update physics
@@ -1049,8 +1083,10 @@ def main():
             screen.blit(ai_text, (SCREEN_WIDTH // 2 - 150, 10))
             # Show engine is always-on
             font_ai_sub = pygame.font.Font(None, 24)
-            engine_text = font_ai_sub.render("Engine: ALWAYS ON | RCS: AI-controlled", True, (0, 200, 200))
-            screen.blit(engine_text, (SCREEN_WIDTH // 2 - 150, 38))
+            n_act = game_state.ai_action_size
+            rcs_label = "RCS: rotation + lateral" if n_act >= 7 else "RCS: rotation only"
+            engine_text = font_ai_sub.render(f"Engine: ALWAYS ON | {rcs_label} ({n_act} actions)", True, (0, 200, 200))
+            screen.blit(engine_text, (SCREEN_WIDTH // 2 - 180, 38))
         elif AI_AVAILABLE and game_state.ai_agent is not None:
             font = pygame.font.Font(None, 24)
             ai_text = font.render("Press A for AI autopilot", True, (150, 150, 150))
@@ -1121,17 +1157,32 @@ def main():
         # Draw controls legend (lower right)
         font_legend = pygame.font.SysFont("consolas", 12)
         if game_state.ai_enabled:
-            legend_lines = [
-                "AI AUTOPILOT ACTIVE",
-                "-------------------",
-                "Engine: Always on",
-                "AI controls: RCS +",
-                "  throttle (5 actions)",
-                "",
-                "A        Manual mode",
-                "R        Reset",
-                "ESC      Quit",
-            ]
+            n_act = game_state.ai_action_size
+            if n_act >= 7:
+                legend_lines = [
+                    "AI AUTOPILOT ACTIVE",
+                    "-------------------",
+                    "Engine: Always on",
+                    "AI controls: RCS +",
+                    "  throttle + lateral",
+                    f"  ({n_act} actions)",
+                    "",
+                    "A        Manual mode",
+                    "R        Reset",
+                    "ESC      Quit",
+                ]
+            else:
+                legend_lines = [
+                    "AI AUTOPILOT ACTIVE",
+                    "-------------------",
+                    "Engine: Always on",
+                    "AI controls: RCS +",
+                    f"  throttle ({n_act} actions)",
+                    "",
+                    "A        Manual mode",
+                    "R        Reset",
+                    "ESC      Quit",
+                ]
         else:
             legend_lines = [
                 "MANUAL CONTROLS",

@@ -13,12 +13,14 @@ State space (9 dimensions):
     7: right leg contact (1 if touching ground)
     8: throttle level (0.1 to 1.0)
 
-Action space (5 discrete actions) - Always-on throttleable engine:
+Action space (7 discrete actions) - Always-on throttleable engine:
     0: No operation (engine continues at current throttle)
     1: RCS_L - Rotate LEFT (use when tilted right, angle > 0)
     2: THR_UP - Increase throttle by 5%
     3: THR_DOWN - Decrease throttle by 5%
     4: RCS_R - Rotate RIGHT (use when tilted left, angle < 0)
+    5: TRANSLATE_L - Lateral translation LEFT (both side thrusters)
+    6: TRANSLATE_R - Lateral translation RIGHT (both side thrusters)
 
 The main engine fires EVERY step at the current throttle level (like the real
 Lunar Module). The agent controls throttle up/down rather than pulsing the
@@ -91,10 +93,11 @@ class ApolloLanderEnv(gym.Env):
 
     def __init__(self, render_mode=None, terrain_roughness=1.0, spawn_altitude=50.0,
                  world_width=None, gravity=-1.62, max_episode_steps=2000,
-                 spring_k_rotation=20.0, spring_k_pad=1.0, spring_k_centering=0.0,
-                 spring_c_damping=30.0,
-                 spring_c_descent=3.0, spring_c_ascend=5.0,
-                 descent_max_rate=2.5, spring_pad_rest_length=15.0,
+                 num_actions=7,
+                 spring_k_rotation=20.0, spring_k_horizontal=0.0, spring_k_vertical=0.0,
+                 spring_c_angular=30.0, spring_c_descent=3.0, spring_c_ascend=5.0,
+                 spring_c_horizontal_vel=0.0, descent_max_rate=2.5,
+                 spring_proximity_gain=0.0,
                  spring_circle_radius=5.0, spring_alpha_deg=10.0):
         """
         Initialize the Apollo lander environment.
@@ -106,15 +109,17 @@ class ApolloLanderEnv(gym.Env):
             world_width: Width of the cylindrical world (auto-calculated if None)
             gravity: Lunar gravity (default -1.62 m/s²)
             max_episode_steps: Maximum steps per episode before truncation
-            spring_k_rotation: Spring constant for rotational stabilization springs (1,2,3)
-            spring_k_pad: Spring constant for pad attraction spring (4)
-            spring_c_damping: Damping coefficient for angular velocity penalty
-            spring_c_descent: Coefficient for descent profile tracking (penalizes deviation from target descent rate)
-            spring_c_ascend: Extra penalty coefficient for ascending (positive vel_y is always wasteful)
-            descent_max_rate: Target descent rate at spawn altitude (m/s). Scales linearly with altitude.
-                             0 = hover target, >0 = altitude-proportional descent profile.
-            spring_pad_rest_length: Rest length for pad spring (creates compression zone near pad)
-            spring_circle_radius: Radius of the imaginary circle for spring anchors
+            num_actions: Number of discrete actions (5 = no lateral, 7 = with lateral RCS)
+            spring_k_rotation: Spring constant for rotational stabilization
+            spring_k_horizontal: Spring constant for horizontal centering toward pad
+            spring_k_vertical: Spring constant for vertical descent (altitude)
+            spring_c_angular: Damping coefficient for angular velocity
+            spring_c_descent: Descent profile tracking coefficient
+            spring_c_ascend: Penalty for ascending (positive vel_y)
+            spring_c_horizontal_vel: Damping for horizontal velocity
+            descent_max_rate: Target descent rate at spawn altitude (m/s)
+            spring_proximity_gain: Extra vertical spring tightening near surface
+            spring_circle_radius: Radius of imaginary circle for rotation spring anchors
             spring_alpha_deg: Angle offset (degrees) for top springs from vertical
         """
         super().__init__()
@@ -138,13 +143,11 @@ class ApolloLanderEnv(gym.Env):
         else:
             self.world_width = world_width
 
-        # Action space: 5 discrete actions (always-on throttleable engine)
-        # 0: No-op (engine continues at current throttle)
-        # 1: RCS_L - Rotate LEFT (use when angle > 0, tilted right)
-        # 2: THR_UP - Increase throttle by 5%
-        # 3: THR_DOWN - Decrease throttle by 5%
-        # 4: RCS_R - Rotate RIGHT (use when angle < 0, tilted left)
-        self.action_space = spaces.Discrete(5)
+        # Action space: 5 or 7 discrete actions (always-on throttleable engine)
+        # 0: No-op, 1: RCS_L, 2: THR_UP, 3: THR_DOWN, 4: RCS_R
+        # 5: TRANSLATE_L, 6: TRANSLATE_R (only if num_actions=7)
+        self.num_actions = num_actions
+        self.action_space = spaces.Discrete(num_actions)
 
         # Observation space: 9 continuous values
         # All normalized to roughly [-1, 1] range for neural network
@@ -199,13 +202,14 @@ class ApolloLanderEnv(gym.Env):
         # Spring-based reward shaping via shared SpringRewardComputer
         self.spring_computer = SpringRewardComputer(
             k_rotation=spring_k_rotation,
-            k_pad=spring_k_pad,
-            k_centering=spring_k_centering,
-            c_damping=spring_c_damping,
+            k_horizontal=spring_k_horizontal,
+            k_vertical=spring_k_vertical,
+            c_angular=spring_c_angular,
             c_descent=spring_c_descent,
             c_ascend=spring_c_ascend,
+            c_horizontal_vel=spring_c_horizontal_vel,
             descent_max_rate=descent_max_rate,
-            pad_rest_length=spring_pad_rest_length,
+            proximity_gain=spring_proximity_gain,
             circle_radius=spring_circle_radius,
             alpha_deg=spring_alpha_deg,
             spawn_altitude=spawn_altitude,
@@ -437,6 +441,26 @@ class ApolloLanderEnv(gym.Env):
 
                 self.fuel = max(0.0, self.fuel - 0.02)
 
+        elif action == 5 and self.num_actions >= 7:
+            # TRANSLATE_L: Both side thrusters fire to push craft LEFT
+            if self.fuel > 0:
+                thrust_dir = ascent.GetWorldVector(b2Vec2(-1.0, 0.0))
+                ascent.ApplyForce(thrust_dir * self.rcs_thrust, left_pod_world, True)
+                ascent.ApplyForce(thrust_dir * self.rcs_thrust, right_pod_world, True)
+                self.rcs_left_side = True
+                self.rcs_right_side = True
+                self.fuel = max(0.0, self.fuel - 0.02)
+
+        elif action == 6 and self.num_actions >= 7:
+            # TRANSLATE_R: Both side thrusters fire to push craft RIGHT
+            if self.fuel > 0:
+                thrust_dir = ascent.GetWorldVector(b2Vec2(1.0, 0.0))
+                ascent.ApplyForce(thrust_dir * self.rcs_thrust, left_pod_world, True)
+                ascent.ApplyForce(thrust_dir * self.rcs_thrust, right_pod_world, True)
+                self.rcs_left_side = True
+                self.rcs_right_side = True
+                self.fuel = max(0.0, self.fuel - 0.02)
+
         # --- ALWAYS-ON ENGINE: fires every step at current throttle ---
         if self.fuel > 0:
             thrust_magnitude = self.descent_thrust_factor * total_mass * self.throttle
@@ -596,7 +620,7 @@ class ApolloLanderEnv(gym.Env):
             return 0.0
 
         pos = self.lander.descent_stage.position
-        vel_y = self.lander.descent_stage.linearVelocity.y
+        vel = self.lander.descent_stage.linearVelocity
         angle = self.lander.descent_stage.angle
         angular_vel = self.lander.descent_stage.angularVelocity
 
@@ -608,7 +632,7 @@ class ApolloLanderEnv(gym.Env):
             lander_x=pos.x, lander_y=pos.y,
             angle=angle, angular_vel=angular_vel,
             pad_x=pad_x, pad_y=pad_y,
-            vel_y=vel_y, terrain_height=terrain_height
+            vel_y=vel.y, vel_x=vel.x, terrain_height=terrain_height
         )
 
     def _calculate_reward(self, landing_status, terminated, truncated):
@@ -629,7 +653,8 @@ class ApolloLanderEnv(gym.Env):
             pad_mult = self.target_pad.get("mult", 1)
 
         rcs_active = (self.rcs_left_up or self.rcs_left_down or
-                      self.rcs_right_up or self.rcs_right_down)
+                      self.rcs_right_up or self.rcs_right_down or
+                      self.rcs_left_side or self.rcs_right_side)
 
         reward = self.spring_computer.compute_reward(
             energy_old=self.prev_shaping,

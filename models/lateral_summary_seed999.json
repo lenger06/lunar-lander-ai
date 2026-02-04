@@ -1,0 +1,24 @@
+{
+  "seed": 999,
+  "total_time_minutes": 227.38594879706702,
+  "physics": "game_identical_10_10",
+  "curriculum": "2_stage_lateral_rcs",
+  "results": [
+    {
+      "stage": 1,
+      "seed": 999,
+      "episodes": 200,
+      "final_success_rate": 100.0,
+      "best_success_rate": 100.0,
+      "train_time": 942.7703039646149
+    },
+    {
+      "stage": 2,
+      "seed": 999,
+      "episodes": 500,
+      "final_success_rate": 78.0,
+      "best_success_rate": 86.0,
+      "train_time": 12699.394387483597
+    }
+  ]
+}
