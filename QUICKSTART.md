@@ -4,9 +4,13 @@
 
 ```bash
 pip install -r requirements.txt
+
+# Box2D must be installed separately (no prebuilt wheels on PyPI for Windows):
+conda install -c conda-forge pybox2d        # Option A: conda (recommended)
+pip install box2d-py                         # Option B: requires SWIG (choco install swig)
 ```
 
-Requires: Python 3.10+, PyTorch, pygame, Box2D (pybox2d), numpy, gymnasium
+Requires: Python 3.10+, PyTorch, numpy, gymnasium, pygame, Box2D (pybox2d)
 
 ## Play the Game
 

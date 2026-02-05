@@ -357,11 +357,27 @@ lunar-lander-ai/
 
 ## Dependencies
 
-Install via `pip install -r requirements.txt`:
+```bash
+pip install -r requirements.txt
+```
 
-- Python 3.10+
-- PyTorch (`torch>=2.0.0`)
-- numpy (`numpy>=1.24.0`)
-- gymnasium (`gymnasium>=0.29.0`)
-- pygame (`pygame>=2.5.0`)
-- Box2D (`Box2D-py>=2.3.8`)
+This installs: PyTorch, numpy, gymnasium, pygame.
+
+**Box2D** must be installed separately (no prebuilt wheels on PyPI for Windows):
+
+```bash
+# Option A: conda (recommended)
+conda install -c conda-forge pybox2d
+
+# Option B: pip (requires SWIG — install via: choco install swig)
+pip install box2d-py
+```
+
+| Package | Version |
+|---------|---------|
+| Python | 3.10+ |
+| torch | >= 2.0.0 |
+| numpy | >= 1.24.0 |
+| gymnasium | >= 0.29.0 |
+| pygame | >= 2.5.0 |
+| Box2D (pybox2d) | >= 2.3.8 |
