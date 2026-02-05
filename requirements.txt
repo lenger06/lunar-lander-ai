@@ -3,10 +3,5 @@
 # Core dependencies
 torch>=2.0.0
 numpy>=1.24.0
-gymnasium>=0.29.0
+gymnasium[box2d]>=0.29.0
 pygame>=2.5.0
-
-# Box2D (pybox2d) — no prebuilt wheels on PyPI for Windows.
-# Install via ONE of these methods:
-#   conda install -c conda-forge pybox2d
-#   pip install box2d-py              (requires SWIG: choco install swig)
