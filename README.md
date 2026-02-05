@@ -74,6 +74,160 @@ The main engine fires continuously at the current throttle level every step. Act
 
 Uses Box2D with game-identical solver settings (10 velocity iterations, 10 position iterations, 1/60s timestep). The training environment (`CurriculumGameEnv`) runs the same physics as the actual game, ensuring trained behavior transfers directly.
 
+## Physics Accuracy: Game vs Real Apollo
+
+The game physics are modeled on the real Apollo Lunar Module and Moon. Most parameters are taken directly from NASA specifications for the Apollo 11 mission.
+
+### Moon
+
+| Parameter | Game | Real Moon | Accuracy |
+|-----------|------|-----------|----------|
+| Surface gravity | 1.62 m/s² | 1.62 m/s² | Exact |
+| Atmosphere/damping | 0.0 (vacuum) | 0.0 (vacuum) | Exact |
+| Diameter | 3,475 km | 3,474 km | Exact |
+| Low orbit altitude | 100 km | 110 km (60 nmi) | Close |
+
+### Lunar Module Mass
+
+| Parameter | Game | Real (Apollo 11) | Accuracy |
+|-----------|------|-------------------|----------|
+| Descent stage dry mass | 2,034 kg | 2,034 kg | Exact |
+| Descent fuel capacity | 8,200 kg | 8,248 kg | ~99% |
+| Descent stage total | 10,234 kg | 10,282 kg | ~99% |
+| Ascent stage dry mass | 2,445 kg | 2,445 kg | Exact |
+| Ascent fuel capacity | 2,353 kg | 2,376 kg | ~99% |
+| Ascent stage total | 4,798 kg | 4,821 kg | ~99% |
+| **Full LM total** | **15,032 kg** | **15,103 kg** | **~99%** |
+
+### Engines
+
+| Parameter | Game | Real LM | Accuracy |
+|-----------|------|---------|----------|
+| DPS max thrust | 45,040 N | 45,040 N (10,125 lbf) | Exact |
+| DPS throttle range | 10% – 100% | ~10% – 100% | Exact |
+| DPS gimbal range | ±6° | ±6° | Exact |
+| DPS specific impulse | ~311 s | 299–305 s | ~2% high |
+| DPS fuel consumption | 14.77 kg/s | ~15.06 kg/s | ~98% |
+| APS thrust | 15,600 N | 15,600 N (3,500 lbf) | Exact |
+| APS type | Fixed thrust | Fixed, non-gimbaled | Match |
+| APS fuel consumption | 5.12 kg/s | ~5.2 kg/s | ~98% |
+
+The real DPS had a restricted throttle band (65%–92.5% avoided due to nozzle erosion). The game does not model this restriction.
+
+### Reaction Control System (RCS)
+
+| Parameter | Game | Real LM | Notes |
+|-----------|------|---------|-------|
+| Thrust per thruster | 445 N | 445 N (100 lbf) | Exact base value |
+| Configuration | 4 pods × 4 thrusters | 4 pods × 4 thrusters | Exact |
+| **Game boost** | **15×** | 1× | Gameplay scaling |
+| Effective per-thruster | 6,675 N | 445 N | 15× stronger |
+
+The 15× RCS boost is the largest deliberate deviation from reality. At real thrust levels, RCS provides very gentle rotational authority — appropriate for the real LM's slow orbital descent over many minutes, but too sluggish for a game where responsive control is needed in a short time window.
+
+### Dimensions
+
+| Parameter | Game | Real LM | Accuracy |
+|-----------|------|---------|----------|
+| Descent stage width | 4.2 m | 4.2 m | Exact |
+| Descent stage height | 1.6 m | 1.7 m | ~94% |
+| Landing leg span | ~7.6 m | 9.4 m (diagonal) | ~81% |
+| Foot pad width | 0.9 m | ~0.9 m | Match |
+| Foot pad friction | 1.4 | N/A (lunar regolith) | Tuned for gameplay |
+
+### Thrust-to-Weight Ratio
+
+| Condition | Game | Real LM |
+|-----------|------|---------|
+| Full fuel (start of descent) | 2.71 | 1.84 |
+| Near empty (landing) | ~2.71 | ~3.66 |
+
+The game uses a constant TWR of 2.71 (`thrust_factor = gravity × 2.71`). The real LM's TWR changed dramatically as fuel burned off — starting around 1.84 at the beginning of powered descent and climbing to ~3.66 near touchdown. The game's value sits in the middle. The real LM started powered descent from 15 km altitude at orbital velocity, burning most of its fuel for deceleration. The game starts at ~50–100 m altitude, so the higher constant TWR provides appropriate control authority for the shorter hover-and-land scenario.
+
+### Gameplay Fuel Budget
+
+The game descent fuel is scaled down to ~82 kg (vs 8,248 kg real) because the game simulates only the final landing phase, not the full 12-minute powered descent from orbit. Fuel consumption rates use the real formula (`thrust / (Isp × g₀)`) with the reduced budget.
+
+### Summary
+
+| Category | Accuracy |
+|----------|----------|
+| Moon gravity | Exact |
+| Lander masses | >99% (Apollo 11 values) |
+| Engine thrust values | Exact (DPS + APS) |
+| Throttle range & gimbal | Exact (±6°, 10–100%) |
+| Fuel consumption rates | ~98% |
+| Descent stage dimensions | Exact (4.2 m width) |
+| RCS base thrust | Exact (445 N), then 15× boosted |
+| TWR profile | Constant 2.71 vs variable 1.84–3.66 |
+| Ascent stage dimensions | ~50% scale (visual choice) |
+| Gameplay fuel budget | ~1% of real (appropriate for scenario) |
+
+### Controls Comparison
+
+The real Apollo LM was controlled by two hand controllers, a guidance computer (LGC), and associated mode switches. The game simplifies this into discrete key presses (manual) or single-action-per-frame decisions (AI).
+
+#### Attitude Control (Rotation)
+
+| | Game — Manual | Game — AI | Real Apollo LM |
+|-|---------------|-----------|----------------|
+| **Input device** | Numpad 7/Home, Numpad 9/PgUp | Actions 1 and 4 | ACA (Attitude Controller Assembly) — 3-axis proportional joystick |
+| **Input type** | Discrete key press | One action per frame (60 Hz) | Proportional — ±10° deflection with 1° deadband |
+| **Thruster firing** | Coupled pair: left pod + right pod fire in opposing vertical directions | Same coupled pair logic | 16 RCS jets (4 pods × 4 jets), jet-select logic computed by LGC or ATCA |
+| **Control modes** | Direct thruster firing only | Direct thruster firing only | Rate Command/Attitude Hold (ACA displacement = rate; release = hold), Pulse Mode (minimum impulse per deflection), or full Auto (LGC controls) |
+| **Attitude hold** | No — rotation continues until countered | No — agent must learn to counter | Yes — LGC/ATCA automatically holds attitude when ACA is in detent |
+
+#### Translation (Lateral Movement)
+
+| | Game — Manual | Game — AI | Real Apollo LM |
+|-|---------------|-----------|----------------|
+| **Input device** | Numpad 4/Left, Numpad 6/Right | Actions 5 and 6 (7-action models) | TTCA (Thrust/Translation Controller Assembly) — 3-axis T-handle |
+| **Axes** | Lateral only (left/right) | Lateral only (left/right) | All 3 axes (X, Y, Z translation) |
+| **Thruster firing** | Side thrusters on one pod | Both pods fire in same direction | RCS jets selected by LGC/ATCA for requested translation axis |
+| **Available** | Always | Only in 7-action models (Stages 2–3) | Always (TTCA jets position) |
+
+#### Throttle (Descent Engine)
+
+| | Game — Manual | Game — AI | Real Apollo LM |
+|-|---------------|-----------|----------------|
+| **Input device** | Up/Down arrow keys | Actions 2 and 3 | TTCA X-axis (throttle position) |
+| **Input type** | Discrete 5% steps | Discrete 5% steps | Continuous — proportional to handle deflection |
+| **Range** | 10% – 100% | 10% – 100% | 10% – 92.5% (with restricted band at 65%–92.5%) |
+| **Soft stop** | No | No | Yes — at ~53% deflection for fine control during landing |
+| **Auto mode** | No | No | Yes — LGC commands throttle in AUTO mode; manual input can be summed with or override LGC commands |
+| **Engine state** | Always on | Always on | Start/stop via ENGINE START/STOP buttons |
+
+#### Gimbal (Engine Thrust Vectoring)
+
+| | Game — Manual | Game — AI | Real Apollo LM |
+|-|---------------|-----------|----------------|
+| **Control** | Manual — Comma/Period/Slash keys | Not available (fixed at 0°) | Automatic — LGC trims gimbal to keep thrust through CG |
+| **Range** | ±6° | N/A | ±6° in pitch and roll |
+| **Rate** | 1° per key press | N/A | Continuous servo-driven |
+| **Purpose** | Pilot-controlled thrust vectoring | N/A | CG offset compensation (automatic trim) |
+
+#### Guidance Computer
+
+| | Game — Manual | Game — AI | Real Apollo LM |
+|-|---------------|-----------|----------------|
+| **Computer** | None | Double DQN neural network | Apollo Guidance Computer (AGC/LGC) with DSKY interface |
+| **Backup** | N/A | Triple ensemble voting | AGS (Abort Guidance System) — independent backup computer |
+| **Programs** | N/A | Single trained policy | P63 (braking), P64 (approach), P66 (landing phase) |
+| **Landing point redesignation** | Tab/Shift-Tab to cycle pads | Target pad fixed per episode | LPD mode — astronaut nudges landing site via ACA inputs to LGC |
+
+#### Key Differences Summary
+
+| Feature | Game — Manual | Game — AI | Real Apollo LM |
+|---------|---------------|-----------|----------------|
+| Attitude hold | No | No | Yes (automatic) |
+| Proportional inputs | No (discrete) | No (discrete) | Yes (continuous joystick) |
+| Engine start/stop | Always on | Always on | Pilot-controlled |
+| Gimbal control | Manual | None | Automatic (LGC) |
+| Throttle auto mode | No | No | Yes (LGC P66) |
+| 3-axis translation | Lateral only | Lateral only | Full 3-axis |
+| RCS thrust | 15× boosted | 15× boosted | Real (445 N/jet) |
+| Control update rate | 60 Hz (every frame) | 60 Hz (every frame) | 25.6 Hz (AGC cycle) |
+
 ## Training
 
 ### 3-Stage Curriculum
