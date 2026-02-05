@@ -17,6 +17,7 @@ import random
 import sys
 import numpy as np
 import torch
+from collections import Counter
 from Box2D import b2World, b2PolygonShape, b2Vec2
 from apollo_terrain import (
     ApolloTerrain,
@@ -102,7 +103,12 @@ PLANET_PROPERTIES = {
 # Parse command-line arguments
 SELECTED_PLANET = "luna"
 TERRAIN_DIFFICULTY = 1
-for arg in sys.argv[1:]:
+ENSEMBLE_SEEDS = None  # None = single agent mode, list of 3 = ensemble mode
+AUTO_EPISODES = 0  # 0 = normal interactive mode, >0 = auto-restart for N episodes
+argv = sys.argv[1:]
+i = 0
+while i < len(argv):
+    arg = argv[i]
     lower_arg = arg.lower()
     if lower_arg in PLANET_PROPERTIES:
         SELECTED_PLANET = lower_arg
@@ -112,15 +118,40 @@ for arg in sys.argv[1:]:
             TERRAIN_DIFFICULTY = max(1, min(3, TERRAIN_DIFFICULTY))
         except ValueError:
             print(f"Invalid difficulty '{arg}'. Using default: 1")
-    elif lower_arg in ("1", "2", "3") and arg == sys.argv[-1]:
-        # Allow bare number as last arg for convenience
+    elif lower_arg == "--models":
+        # Consume next 3 args as seed numbers (first = master/tie-breaker)
+        seeds = []
+        for j in range(1, 4):
+            if i + j < len(argv):
+                try:
+                    seeds.append(int(argv[i + j]))
+                except ValueError:
+                    print(f"Invalid seed '{argv[i + j]}'. --models requires 3 integer seeds.")
+                    seeds = []
+                    break
+        if len(seeds) == 3:
+            ENSEMBLE_SEEDS = seeds
+            print(f"Ensemble mode: seeds {seeds} (master: {seeds[0]})")
+        else:
+            print("Usage: --models SEED1 SEED2 SEED3 (first seed = master/tie-breaker)")
+        i += 3  # skip the 3 seed args
+    elif lower_arg.startswith("--episodes="):
+        try:
+            AUTO_EPISODES = int(lower_arg.split("=")[1])
+            print(f"Auto-run mode: {AUTO_EPISODES} episodes")
+        except ValueError:
+            print(f"Invalid episodes '{arg}'. Using interactive mode.")
+    elif lower_arg in ("1", "2", "3") and arg == argv[-1]:
         TERRAIN_DIFFICULTY = int(lower_arg)
     else:
         print(f"Unknown argument '{arg}'. Available planets:")
         for planet in PLANET_PROPERTIES.keys():
             print(f"  - {planet}")
         print(f"Difficulty: --difficulty=1|2|3")
+        print(f"Ensemble: --models SEED1 SEED2 SEED3")
+        print(f"Auto-run: --episodes=N")
         print(f"Using defaults: {SELECTED_PLANET}, difficulty {TERRAIN_DIFFICULTY}")
+    i += 1
 
 # Get planet properties
 PLANET = PLANET_PROPERTIES[SELECTED_PLANET]
@@ -163,6 +194,8 @@ class GameState:
         self.ai_enabled = False
         self.ai_agent = None
         self.ai_action_size = 5
+        self.ai_ensemble = None  # List of (agent, action_size) tuples, or None
+        self.ai_vote_agreement = ""  # "3/3", "2/3", "1/3*"
 
         # AI angle tracking (continuous, matches training env)
         self.ai_prev_raw_angle = 0.0
@@ -217,6 +250,51 @@ def get_ai_action(agent, state):
     except Exception as e:
         print(f"[!] AI action error: {e}")
         return 0
+
+def load_ensemble(seeds, save_dir='models'):
+    """Load 3 AI agents for ensemble voting. First seed is master/tie-breaker."""
+    if not AI_AVAILABLE:
+        return None
+    agents = []
+    for seed in seeds:
+        model_path, action_size = find_model(seed, save_dir)
+        if model_path is None or not os.path.exists(model_path):
+            print(f"[!] No model found for seed {seed} — ensemble requires all 3 models")
+            return None
+        try:
+            agent = DoubleDQNAgent(state_size=9, action_size=action_size, seed=seed)
+            agent.load(model_path)
+            agents.append((agent, action_size))
+            role = "MASTER" if len(agents) == 1 else f"agent {len(agents)}"
+            print(f"[OK] Ensemble {role}: seed {seed} from {model_path} ({action_size} actions)")
+        except Exception as e:
+            print(f"[!] Failed to load seed {seed}: {e}")
+            return None
+    return agents
+
+
+def get_ensemble_action(agents, state):
+    """Get action via majority vote from 3 agents. Agent[0] is tie-breaker."""
+    actions = []
+    for agent, _ in agents:
+        try:
+            s = state if isinstance(state, np.ndarray) else np.array(state, dtype=np.float32)
+            actions.append(agent.act(s, eps=0.0))
+        except Exception as e:
+            print(f"[!] Ensemble agent error: {e}")
+            actions.append(0)
+
+    counts = Counter(actions)
+    winner, top_count = counts.most_common(1)[0]
+
+    if top_count >= 2:
+        # Majority (2 or 3 agree)
+        agreement = "3/3" if top_count == 3 else "2/3"
+        return winner, agreement
+    else:
+        # All 3 different — master (agent[0]) decides
+        return actions[0], "1/3*"
+
 
 def lander_state_to_gym_state(lander, target_x, target_y, descent_throttle, game_state):
     """
@@ -275,6 +353,81 @@ def lander_state_to_gym_state(lander, target_x, target_y, descent_throttle, game
 
     return state
 
+def _log_episode(ep, total, game_state, lander, descent_fuel, max_descent_fuel,
+                  target_pad, steps, is_point_on_pad_fn):
+    """Log a single episode result. Returns a dict for summary aggregation."""
+    pos = lander.descent_stage.position
+    vel = lander.descent_stage.linearVelocity
+    angle_deg = math.degrees(lander.descent_stage.angle)
+    speed = math.sqrt(vel.x**2 + vel.y**2)
+    fuel_pct = (descent_fuel / max_descent_fuel) * 100 if max_descent_fuel > 0 else 0
+    on_target = is_point_on_pad_fn(pos.x, pos.y, target_pad, tolerance_x=2.5, tolerance_y=3.0)
+    pad_cx = (target_pad["x1"] + target_pad["x2"]) / 2.0
+    dist_x = abs(pos.x - pad_cx)
+
+    if game_state.crashed:
+        status = "CRASHED"
+    elif on_target:
+        status = "ON-TARGET"
+    else:
+        status = "OFF-TARGET"
+
+    print(f"  Ep {ep:4d}/{total} | {status:10s} | Speed: {speed:5.2f} m/s | "
+          f"Angle: {angle_deg:+6.1f}° | Dist: {dist_x:5.1f}m | "
+          f"Fuel: {fuel_pct:4.1f}% | Steps: {steps}")
+
+    return {
+        "status": status,
+        "speed": speed,
+        "angle": abs(angle_deg),
+        "dist_x": dist_x,
+        "fuel_pct": fuel_pct,
+        "steps": steps,
+    }
+
+
+def _print_summary(results, ensemble_seeds):
+    """Print evaluation summary after all episodes complete."""
+    total = len(results)
+    landed = [r for r in results if r["status"] != "CRASHED"]
+    on_target = [r for r in results if r["status"] == "ON-TARGET"]
+    crashed = [r for r in results if r["status"] == "CRASHED"]
+
+    print("\n" + "=" * 70)
+    if ensemble_seeds:
+        print(f"GAME EVALUATION — ENSEMBLE [{', '.join(str(s) for s in ensemble_seeds)}]")
+    else:
+        print("GAME EVALUATION — SINGLE AGENT")
+    print("=" * 70)
+    print(f"Episodes:      {total}")
+    print(f"Landed:        {len(landed)} ({100.0 * len(landed) / total:.1f}%)")
+    print(f"  On target:   {len(on_target)} ({100.0 * len(on_target) / total:.1f}%)")
+    print(f"  Off target:  {len(landed) - len(on_target)}")
+    print(f"Crashed:       {len(crashed)} ({100.0 * len(crashed) / total:.1f}%)")
+
+    if landed:
+        speeds = [r["speed"] for r in landed]
+        angles = [r["angle"] for r in landed]
+        dists = [r["dist_x"] for r in landed]
+        fuels = [r["fuel_pct"] for r in landed]
+        steps = [r["steps"] for r in landed]
+        soft = sum(1 for s in speeds if s < 1.0)
+        gentle = sum(1 for s in speeds if 1.0 <= s < 2.0)
+        hard = sum(1 for s in speeds if s >= 2.0)
+
+        print(f"\n--- Landing Quality ---")
+        print(f"Avg speed:     {np.mean(speeds):.2f} m/s  (max {np.max(speeds):.2f})")
+        print(f"Avg angle:     {np.mean(angles):.1f}°  (max {np.max(angles):.1f}°)")
+        print(f"Avg dist:      {np.mean(dists):.2f} m  (max {np.max(dists):.2f})")
+        print(f"Avg fuel left: {np.mean(fuels):.1f}%")
+        print(f"Avg steps:     {np.mean(steps):.0f}  (min {np.min(steps)}, max {np.max(steps)})")
+        print(f"\nLanding breakdown:")
+        print(f"  Soft (<1 m/s):     {soft} ({100.0 * soft / len(landed):.1f}%)")
+        print(f"  Gentle (1-2 m/s):  {gentle} ({100.0 * gentle / len(landed):.1f}%)")
+        print(f"  Hard (>2 m/s):     {hard} ({100.0 * hard / len(landed):.1f}%)")
+    print("=" * 70)
+
+
 # -------------------------------------------------
 # Main Game
 # -------------------------------------------------
@@ -288,10 +441,26 @@ def main():
     game_state = GameState()
     hud = ApolloHUD(SCREEN_WIDTH, SCREEN_HEIGHT)
 
-    # Try to load AI agent
+    # Try to load AI agent(s)
     if AI_AVAILABLE:
-        game_state.ai_agent, game_state.ai_action_size = load_ai_agent()
-        if game_state.ai_agent is not None:
+        if ENSEMBLE_SEEDS is not None:
+            ensemble = load_ensemble(ENSEMBLE_SEEDS)
+            if ensemble is not None:
+                game_state.ai_ensemble = ensemble
+                game_state.ai_agent = ensemble[0][0]  # master agent as fallback reference
+                game_state.ai_action_size = max(a for _, a in ensemble)
+                print("\n" + "="*60)
+                print(f"ENSEMBLE AUTOPILOT READY (seeds: {ENSEMBLE_SEEDS})")
+                print(f"Master/tie-breaker: seed {ENSEMBLE_SEEDS[0]}")
+                print("="*60)
+                print("Press 'A' to toggle between AI and Manual control")
+                print("="*60 + "\n")
+            else:
+                print("[!] Ensemble loading failed, falling back to single agent")
+                game_state.ai_agent, game_state.ai_action_size = load_ai_agent()
+        else:
+            game_state.ai_agent, game_state.ai_action_size = load_ai_agent()
+        if game_state.ai_agent is not None and game_state.ai_ensemble is None:
             print("\n" + "="*60)
             print("AI AUTOPILOT READY")
             print("="*60)
@@ -396,10 +565,48 @@ def main():
     # Start new game
     new_game()
 
+    # Auto-run episode tracking
+    episode_num = 0
+    episode_step = 0
+    episode_logged = False  # prevents double-logging same episode
+    episode_results = []  # list of dicts for summary
+    auto_restart_delay = 0  # frames to wait before auto-restart
+
+    # Auto-enable AI in auto-run mode
+    if AUTO_EPISODES > 0 and game_state.ai_agent is not None:
+        game_state.ai_enabled = True
+        episode_num = 1
+        print(f"\n--- Auto-run: Episode {episode_num}/{AUTO_EPISODES} ---")
+
     # Main game loop
     running = True
     while running:
         dt = clock.tick(TARGET_FPS) / 1000.0
+        episode_step += 1
+
+        # Auto-run: handle episode end + auto-restart
+        if AUTO_EPISODES > 0 and (game_state.crashed or game_state.landed):
+            if not episode_logged:
+                episode_logged = True
+                result = _log_episode(episode_num, AUTO_EPISODES, game_state, lander,
+                                      descent_fuel, max_descent_fuel, target_pad,
+                                      episode_step, is_point_on_pad)
+                episode_results.append(result)
+                auto_restart_delay = 30  # half-second pause to see result
+
+            if auto_restart_delay > 0:
+                auto_restart_delay -= 1
+            else:
+                episode_num += 1
+                if episode_num > AUTO_EPISODES:
+                    _print_summary(episode_results, ENSEMBLE_SEEDS)
+                    running = False
+                    continue
+                new_game()
+                episode_step = 0
+                episode_logged = False
+                game_state.ai_enabled = True
+                print(f"\n--- Auto-run: Episode {episode_num}/{AUTO_EPISODES} ---")
 
         # Event handling
         for event in pygame.event.get():
@@ -478,7 +685,11 @@ def main():
             target_x = (target_pad["x1"] + target_pad["x2"]) / 2.0
             target_y = target_pad["y"]
             state = lander_state_to_gym_state(lander, target_x, target_y, descent_throttle, game_state)
-            action = get_ai_action(game_state.ai_agent, state)
+            if game_state.ai_ensemble is not None:
+                action, game_state.ai_vote_agreement = get_ensemble_action(game_state.ai_ensemble, state)
+            else:
+                action = get_ai_action(game_state.ai_agent, state)
+                game_state.ai_vote_agreement = ""
 
             # Engine is ALWAYS ON at current throttle (matches training env)
             main_thrust = True
@@ -1094,18 +1305,35 @@ def main():
         # Draw AI status indicator
         if game_state.ai_enabled:
             font = pygame.font.Font(None, 36)
-            ai_text = font.render("AI AUTOPILOT [A to disable]", True, (0, 255, 0))
-            screen.blit(ai_text, (SCREEN_WIDTH // 2 - 150, 10))
-            # Show engine is always-on
-            font_ai_sub = pygame.font.Font(None, 24)
-            n_act = game_state.ai_action_size
-            rcs_label = "RCS: rotation + lateral" if n_act >= 7 else "RCS: rotation only"
-            engine_text = font_ai_sub.render(f"Engine: ALWAYS ON | {rcs_label} ({n_act} actions)", True, (0, 200, 200))
-            screen.blit(engine_text, (SCREEN_WIDTH // 2 - 180, 38))
+            if game_state.ai_ensemble is not None:
+                seeds_str = ", ".join(str(s) for s in ENSEMBLE_SEEDS)
+                ai_text = font.render(f"ENSEMBLE [{seeds_str}] [A to disable]", True, (0, 255, 0))
+                screen.blit(ai_text, (SCREEN_WIDTH // 2 - 200, 10))
+                # Vote agreement indicator
+                font_ai_sub = pygame.font.Font(None, 24)
+                vote = game_state.ai_vote_agreement
+                if vote == "3/3":
+                    vote_color = (0, 255, 0)  # green = unanimous
+                elif vote == "2/3":
+                    vote_color = (255, 255, 0)  # yellow = majority
+                else:
+                    vote_color = (255, 100, 100)  # red = split (master decides)
+                vote_text = font_ai_sub.render(f"Vote: {vote} | Master: seed {ENSEMBLE_SEEDS[0]}", True, vote_color)
+                screen.blit(vote_text, (SCREEN_WIDTH // 2 - 150, 38))
+            else:
+                ai_text = font.render("AI AUTOPILOT [A to disable]", True, (0, 255, 0))
+                screen.blit(ai_text, (SCREEN_WIDTH // 2 - 150, 10))
+                # Show engine is always-on
+                font_ai_sub = pygame.font.Font(None, 24)
+                n_act = game_state.ai_action_size
+                rcs_label = "RCS: rotation + lateral" if n_act >= 7 else "RCS: rotation only"
+                engine_text = font_ai_sub.render(f"Engine: ALWAYS ON | {rcs_label} ({n_act} actions)", True, (0, 200, 200))
+                screen.blit(engine_text, (SCREEN_WIDTH // 2 - 180, 38))
         elif AI_AVAILABLE and game_state.ai_agent is not None:
             font = pygame.font.Font(None, 24)
-            ai_text = font.render("Press A for AI autopilot", True, (150, 150, 150))
-            screen.blit(ai_text, (SCREEN_WIDTH // 2 - 100, 10))
+            label = "Press A for ENSEMBLE autopilot" if game_state.ai_ensemble else "Press A for AI autopilot"
+            ai_text = font.render(label, True, (150, 150, 150))
+            screen.blit(ai_text, (SCREEN_WIDTH // 2 - 130, 10))
 
         # Draw game over / success indicator
         if game_state.crashed or game_state.landed:

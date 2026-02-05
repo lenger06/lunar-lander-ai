@@ -1,16 +1,8 @@
-# Requirements for Hierarchical DQN Lunar Lander
+# Requirements for Apollo Lunar Lander AI
 
 # Core dependencies
-gymnasium>=0.29.0
 torch>=2.0.0
 numpy>=1.24.0
-matplotlib>=3.7.0
-
-# Optional but recommended for better performance
-# Uncomment if you have CUDA GPU:
-# torch-cuda>=2.0.0
-
-# For video recording (optional)
-# opencv-python>=4.8.0
-# imageio>=2.31.0
-# imageio-ffmpeg>=0.4.9
+gymnasium>=0.29.0
+pygame>=2.5.0
+Box2D-py>=2.3.8
