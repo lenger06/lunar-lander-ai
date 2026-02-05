@@ -101,15 +101,26 @@ PLANET_PROPERTIES = {
 
 # Parse command-line arguments
 SELECTED_PLANET = "luna"
-if len(sys.argv) > 1:
-    planet_arg = sys.argv[1].lower()
-    if planet_arg in PLANET_PROPERTIES:
-        SELECTED_PLANET = planet_arg
+TERRAIN_DIFFICULTY = 1
+for arg in sys.argv[1:]:
+    lower_arg = arg.lower()
+    if lower_arg in PLANET_PROPERTIES:
+        SELECTED_PLANET = lower_arg
+    elif lower_arg.startswith("--difficulty="):
+        try:
+            TERRAIN_DIFFICULTY = int(lower_arg.split("=")[1])
+            TERRAIN_DIFFICULTY = max(1, min(3, TERRAIN_DIFFICULTY))
+        except ValueError:
+            print(f"Invalid difficulty '{arg}'. Using default: 1")
+    elif lower_arg in ("1", "2", "3") and arg == sys.argv[-1]:
+        # Allow bare number as last arg for convenience
+        TERRAIN_DIFFICULTY = int(lower_arg)
     else:
-        print(f"Unknown planet '{sys.argv[1]}'. Available planets:")
+        print(f"Unknown argument '{arg}'. Available planets:")
         for planet in PLANET_PROPERTIES.keys():
             print(f"  - {planet}")
-        print(f"Using default: {SELECTED_PLANET}")
+        print(f"Difficulty: --difficulty=1|2|3")
+        print(f"Using defaults: {SELECTED_PLANET}, difficulty {TERRAIN_DIFFICULTY}")
 
 # Get planet properties
 PLANET = PLANET_PROPERTIES[SELECTED_PLANET]
@@ -322,7 +333,7 @@ def main():
         world = b2World(gravity=(0, LUNAR_GRAVITY))
 
         # Generate terrain
-        terrain_gen = ApolloTerrain(world_width_meters=WORLD_WIDTH, roughness=TERRAIN_ROUGHNESS)
+        terrain_gen = ApolloTerrain(world_width_meters=WORLD_WIDTH, difficulty=TERRAIN_DIFFICULTY, roughness=TERRAIN_ROUGHNESS)
         terrain_body, terrain_pts, pads_info = terrain_gen.generate_terrain(world)
 
         # Select target pad
@@ -422,11 +433,23 @@ def main():
                     else:
                         print("[!] AI agent not available")
 
-                # Throttle control (5% per key press)
+                # Throttle control (5% per key press, min 10% to match AI)
                 elif event.key == pygame.K_KP8 or event.key == pygame.K_UP:
                     descent_throttle = min(1.0, descent_throttle + 0.05)
                 elif event.key == pygame.K_KP2 or event.key == pygame.K_DOWN:
-                    descent_throttle = max(0.0, descent_throttle - 0.05)
+                    descent_throttle = max(0.1, descent_throttle - 0.05)
+
+                # Tab/Shift-Tab: Cycle target landing pad
+                elif event.key == pygame.K_TAB:
+                    mods = pygame.key.get_mods()
+                    if mods & pygame.KMOD_SHIFT:
+                        target_pad_index = (target_pad_index - 1) % len(pads_info)
+                    else:
+                        target_pad_index = (target_pad_index + 1) % len(pads_info)
+                    target_pad = pads_info[target_pad_index]
+                    pad_x = (target_pad["x1"] + target_pad["x2"]) / 2.0
+                    pad_mult = target_pad.get("mult", 1)
+                    print(f"Target pad: {target_pad_index + 1}/{len(pads_info)} | x={pad_x:.0f}m | {pad_mult}x multiplier")
 
                 # Gimbal control (1 degree per key press, max 6 degrees)
                 elif event.key == pygame.K_COMMA:
@@ -491,28 +514,24 @@ def main():
                 # TRANSLATE_R: both pods fire RIGHT force (same as training env)
                 game_state._ai_translate = 1   # RIGHT
         else:
-            # MANUAL CONTROL MODE - Numpad controls
-            main_thrust = keys[pygame.K_SPACE]
+            # MANUAL CONTROL MODE — matches AI action space
+            # Engine is ALWAYS ON at current throttle (same as AI)
+            main_thrust = True
 
-            # Individual RCS thruster control (numpad)
-            rcs_left_up = keys[pygame.K_KP7] or keys[pygame.K_HOME]      # 7/Home: Left pod up thruster
-            rcs_left_side = keys[pygame.K_KP4] or keys[pygame.K_LEFT]    # 4/Left: Left pod side thruster
-            rcs_left_down = keys[pygame.K_KP1] or keys[pygame.K_END]     # 1/End: Left pod down thruster
-            rcs_right_up = keys[pygame.K_KP9] or keys[pygame.K_PAGEUP]   # 9/PgUp: Right pod up thruster
-            rcs_right_side = keys[pygame.K_KP6] or keys[pygame.K_RIGHT]  # 6/Right: Right pod side thruster
-            rcs_right_down = keys[pygame.K_KP3] or keys[pygame.K_PAGEDOWN] # 3/PgDn: Right pod down thruster
-
-            # Coordinated translation controls (Q/E for horizontal translation with attitude hold)
-            # Q = translate LEFT: right side + right down + left up
-            if keys[pygame.K_q]:
-                rcs_right_side = True
-                rcs_right_down = True
+            # 7/Home: RCS_L — Rotate LEFT (coupled: left pod up + right pod down)
+            if keys[pygame.K_KP7] or keys[pygame.K_HOME]:
                 rcs_left_up = True
-            # E = translate RIGHT: left side + left down + right up
-            if keys[pygame.K_e]:
-                rcs_left_side = True
-                rcs_left_down = True
+                rcs_right_down = True
+            # 9/PgUp: RCS_R — Rotate RIGHT (coupled: right pod up + left pod down)
+            if keys[pygame.K_KP9] or keys[pygame.K_PAGEUP]:
                 rcs_right_up = True
+                rcs_left_down = True
+            # 4/Left: TRANSLATE_L — Fire right pod side thruster (pushes craft left)
+            if keys[pygame.K_KP4] or keys[pygame.K_LEFT]:
+                rcs_right_side = True
+            # 6/Right: TRANSLATE_R — Fire left pod side thruster (pushes craft right)
+            if keys[pygame.K_KP6] or keys[pygame.K_RIGHT]:
+                rcs_left_side = True
 
 
         # Apply forces to lander
@@ -565,13 +584,9 @@ def main():
             rcs_center_offset_x = user_data.get("rcs_center_offset_x", 2.1 * scale)
             rcs_center_y = user_data.get("rcs_center_y", 0.0)
 
-            # Real Apollo RCS thrust: 445 N per thruster
-            # With mass scaling: force = thrust_N / MASS_SCALE (100 kg per unit)
-            # AI uses 15x boosted RCS (matches training env for meaningful control authority)
-            if game_state.ai_enabled:
-                rcs_thrust_per_thruster = 15.0 * 445.0 / 100.0  # 66.75 force units (training env)
-            else:
-                rcs_thrust_per_thruster = 445.0 / 100.0  # 4.45 force units (realistic)
+            # RCS thrust: 15x boosted from realistic Apollo 445 N per thruster
+            # Both AI and manual use same force for consistent physics
+            rcs_thrust_per_thruster = 15.0 * 445.0 / 100.0  # 66.75 force units (matches training env)
 
             # Pod positions
             right_pod_pos = b2Vec2(rcs_center_offset_x, rcs_center_y)

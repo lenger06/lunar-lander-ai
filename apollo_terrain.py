@@ -178,11 +178,14 @@ class ApolloTerrain:
         Higher mult = harder landing, higher score
         """
         if self.difficulty == 1:
-            # Easy: 3 pads, all large and easy to land on
+            # Easy: 6 pads, spread evenly across terrain
             return [
-                {"start": int(num_segments * 0.15), "len": 8, "mult": 2},  # Large easy pad
-                {"start": int(num_segments * 0.50), "len": 7, "mult": 3},  # Medium pad
-                {"start": int(num_segments * 0.80), "len": 6, "mult": 4},  # Smaller pad
+                {"start": int(num_segments * 0.08), "len": 8, "mult": 2},
+                {"start": int(num_segments * 0.24), "len": 7, "mult": 3},
+                {"start": int(num_segments * 0.40), "len": 6, "mult": 4},
+                {"start": int(num_segments * 0.56), "len": 8, "mult": 2},
+                {"start": int(num_segments * 0.72), "len": 7, "mult": 3},
+                {"start": int(num_segments * 0.88), "len": 6, "mult": 4},
             ]
         elif self.difficulty == 2:
             # Medium: 4 pads, varied sizes but all landable
