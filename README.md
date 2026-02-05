@@ -144,9 +144,35 @@ The 15× RCS boost is the largest deliberate deviation from reality. At real thr
 
 The game uses a constant TWR of 2.71 (`thrust_factor = gravity × 2.71`). The real LM's TWR changed dramatically as fuel burned off — starting around 1.84 at the beginning of powered descent and climbing to ~3.66 near touchdown. The game's value sits in the middle. The real LM started powered descent from 15 km altitude at orbital velocity, burning most of its fuel for deceleration. The game starts at ~50–100 m altitude, so the higher constant TWR provides appropriate control authority for the shorter hover-and-land scenario.
 
-### Gameplay Fuel Budget
+### Fuel System
 
-The game descent fuel is scaled down to ~82 kg (vs 8,248 kg real) because the game simulates only the final landing phase, not the full 12-minute powered descent from orbit. Fuel consumption rates use the real formula (`thrust / (Isp × g₀)`) with the reduced budget.
+The project has two game versions with different fuel models:
+
+#### Manual Game (`apollolandergame.py`) — NASA-Accurate
+
+| Parameter | Game | Real Apollo | Accuracy |
+|-----------|------|-------------|----------|
+| Descent fuel capacity | 8,248 kg | 8,248 kg | Exact |
+| Descent dry mass | 1,998 kg | 2,034 kg | ~98% |
+| Burn rate formula | `thrust / (Isp × g₀)` | `thrust / (Isp × g₀)` | Same method |
+| Burn rate at full throttle | 14.77 kg/s | ~15.06 kg/s (Isp 305 s) | ~98% |
+| Burn time at 100% throttle | 558 sec (9.3 min) | ~547 sec (9.1 min) | ~98% |
+| Dynamic mass update | Yes — mass decreases as fuel burns | Yes | Match |
+| TWR changes with fuel | Yes | Yes | Match |
+
+Uses Isp = 311 s vs the real 299–305 s, giving ~2% lower consumption. Lander mass is updated every frame as fuel depletes, so TWR increases naturally toward touchdown — matching real Apollo behavior.
+
+#### AI Game (`apollolandergame_with_ai.py`) — Gameplay-Tuned
+
+| Parameter | AI Game | Realistic (scaled) | Ratio |
+|-----------|---------|---------------------|-------|
+| Fuel capacity | 328 units (4× real scaled) | 82 units | 4× more |
+| Burn rate | 0.12 units/frame at 100% | 0.00246 units/frame | ~49× faster |
+| Burn time at 100% throttle | 2,733 frames (45.6 sec) | 33,333 frames (9.3 min) | ~12× shorter |
+| Burn time at 40% throttle | ~114 sec (~1.9 min) | ~23.2 min | ~12× shorter |
+| Dynamic mass update | No — mass stays constant | Yes | Missing |
+
+The AI game gives 4× the real fuel budget but burns it ~49× faster, resulting in fuel depleting about 12× faster than reality. This creates meaningful fuel pressure for a 20–40 second landing scenario. The constant mass means TWR stays fixed at 2.71 throughout — the AI was trained against this, so it's consistent but less realistic than the manual game.
 
 ### Summary
 
