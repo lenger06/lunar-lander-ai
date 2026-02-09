@@ -1393,7 +1393,7 @@ def main():
             )
 
             # CG indicator and gimbal breakdown (below the gauges)
-            hud.draw_cg_indicator(screen, cg_offset_x, max_offset=0.5, x=10, y=SCREEN_HEIGHT - 115)
+            hud.draw_cg_indicator(screen, cg_offset_x, max_offset=0.5, x=10, y=SCREEN_HEIGHT - 100)
             hud.draw_gimbal_breakdown(screen, descent_gimbal_deg, auto_gimbal_deg, manual_gimbal_deg,
                                        x=10, y=SCREEN_HEIGHT - 70)
 
@@ -1401,7 +1401,7 @@ def main():
         font_small = pygame.font.SysFont("consolas", 12)
         if lander:
             att_center_x = 140
-            att_center_y = SCREEN_HEIGHT - 80
+            att_center_y = SCREEN_HEIGHT - 210  # Aligned with fuel gauges
             att_radius = 50
 
             # Get current angle
