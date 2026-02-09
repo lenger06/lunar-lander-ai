@@ -42,6 +42,34 @@ The ensemble system loads 3 independently trained agents and selects actions via
 
 The first model specified on the command line is the master/tie-breaker. This provides NASA-style triple redundancy — the system is robust against any single agent making a bad decision.
 
+### Ensemble Performance (Seeds 456, 123, 1111)
+
+Evaluation over 100 episodes:
+
+| Metric | Result |
+|--------|--------|
+| **Landing rate** | 99% (99/100) |
+| **On-target landings** | 97% |
+| **Crash rate** | 1% |
+
+#### Landing Quality
+
+| Metric | Average | Max |
+|--------|---------|-----|
+| Landing speed | 0.55 m/s | 1.24 m/s |
+| Landing angle | 6.9° | 18.4° |
+| Distance from target | 1.72 m | 17.44 m |
+| Fuel remaining | 70.0% | — |
+| Steps to land | 1,784 | 2,923 |
+
+#### Landing Breakdown
+
+| Category | Count | Percentage |
+|----------|-------|------------|
+| Soft (<1 m/s) | 57 | 57.6% |
+| Gentle (1–2 m/s) | 42 | 42.4% |
+| Hard (>2 m/s) | 0 | 0.0% |
+
 ### State Space (9 dimensions)
 
 | Index | Feature | Normalization |
