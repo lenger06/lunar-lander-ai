@@ -138,6 +138,17 @@ Both the manual game (`apollolandergame.py`) and AI game now use identical fixed
 | Foot pad width | 0.9 m | ~0.9 m | Match |
 | Foot pad friction | 1.4 | N/A (lunar regolith) | Tuned for gameplay |
 
+### Lunar Surface Sensing Probes (Contact Probes)
+
+| Parameter | Game | Real LM | Notes |
+|-----------|------|---------|-------|
+| Probe length | 1.7 m | 1.7 m (67 inches) | Exact |
+| Number of probes | 2 (visible legs) | 3 (not on ladder leg) | Simplified for 2D |
+| Probe orientation | Always vertical | Always vertical | Gravity-fed design |
+| Contact detection | Auto engine cutoff | "Contact light" + manual cutoff | Automated in game |
+
+The contact probes extend below each foot pad and always hang straight down regardless of lander orientation (simulating gravity-fed probes). When either probe touches the terrain, a cyan "CONTACT" indicator appears on the HUD and the descent engine automatically shuts off — matching the real Apollo procedure where crew would immediately cut the engine upon Buzz Aldrin's famous "Contact light!" callout.
+
 ### Thrust-to-Weight Ratio
 
 | Condition | Game | Real LM |
@@ -517,6 +528,33 @@ Run the game without AI (manual only):
 python apollolandergame.py [planet]
 ```
 
+## Visual Features
+
+### Parallax Starfield
+
+The game features a starfield rendered on an inner cylinder with parallax scrolling:
+
+| Parameter | Value | Effect |
+|-----------|-------|--------|
+| Cylinder ratio | 10% of world width | Strong depth perception |
+| Star count | 800 | Good density without performance impact |
+| Parallax effect | Stars move at 10% of terrain speed | Creates sense of vast distance |
+
+Stars are distributed across the visible altitude range and rendered as single pixels for performance. The terrain is drawn on top of the starfield, naturally occluding stars below the horizon.
+
+### Orbiting Satellite
+
+A Sputnik-style satellite orbits across the sky as a background element:
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| Altitude | 65 m | Above lander spawn (50 m) |
+| Velocity | 8 m/s horizontal | Constant orbital motion |
+| Body diameter | ~0.58 m | Scaled 3x for visibility |
+| Antennas | 4 swept-back | 2.4 m and 2.9 m lengths (like real Sputnik) |
+
+The satellite features a copper/gold spherical body with swept-back antennas that slowly rotate. It wraps around the cylindrical world and appears on the minimap as an orange dot.
+
 ## Project Structure
 
 ```
@@ -538,7 +576,8 @@ lunar-lander-ai/
   world.py                     # World/physics management (ApolloWorld, WorldObject base)
   apollo_terrain.py            # Procedural terrain generation (3 difficulty levels)
   apollo_hud.py                # HUD display
-  apollo_sky.py                # Sky rendering
+  apollo_sky.py                # Sky rendering (parallax starfield)
+  satellite.py                 # Orbiting Sputnik-style satellite
   mini_map.py                  # Mini-map overlay
 
   # Spacecraft Modules

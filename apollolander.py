@@ -141,6 +141,7 @@ class ApolloLander:
             "scale": s,
             "leg_segments": [],
             "foot_bars": [],
+            "contact_probes": [],  # Lunar surface sensing probes below foot pads
         }
         body.userData = data
 
@@ -240,6 +241,13 @@ class ApolloLander:
                 restitution=0.0,
             )
             data["foot_bars"].append((foot, bar_half_w, bar_half_h))
+
+            # Contact probe - extends 1.7m below foot pad (like real Apollo)
+            # Real probes were 67 inches (1.7m) to detect surface before touchdown
+            # Store attachment point (local coords) and length - probe hangs straight down
+            probe_length = 1.7 * s
+            probe_attach = b2Vec2(foot.x, foot.y - bar_half_h)  # Bottom of foot pad
+            data["contact_probes"].append((probe_attach, probe_length, side))
 
         data["main_half_w"] = main_half_w
         data["main_half_h"] = main_half_h
@@ -488,6 +496,18 @@ def draw_descent_front_details(surface, body, data, cam_x=0.0, screen_width=1024
         p1 = world_to_screen(body.transform * p1_local, cam_x, screen_width, screen_height)
         p2 = world_to_screen(body.transform * p2_local, cam_x, screen_width, screen_height)
         pygame.draw.line(surface, (0, 0, 0), p1, p2, 1)
+
+    # Contact probes (lunar surface sensing probes)
+    # Probes always hang straight down regardless of lander orientation
+    probe_color = (180, 180, 180)  # Light gray - more visible
+    for probe_attach, probe_length, side in data.get("contact_probes", []):
+        # Transform attachment point to world coordinates
+        attach_world = body.transform * probe_attach
+        # Probe hangs straight down from attachment point
+        probe_tip_world = b2Vec2(attach_world.x, attach_world.y - probe_length)
+        p1 = world_to_screen(attach_world, cam_x, screen_width, screen_height, cam_y)
+        p2 = world_to_screen(probe_tip_world, cam_x, screen_width, screen_height, cam_y)
+        pygame.draw.line(surface, probe_color, p1, p2, 2)  # Thicker line for visibility
 
 
 def _vec_to_tuple(v):
@@ -788,3 +808,40 @@ def draw_thrusters(
         base, direction = base_and_dir("sr")
         _draw_flame_triangle(surface, body, base, direction, 0.8, 0.22,
                            cam_x=cam_x, screen_width=screen_width, screen_height=screen_height, cam_y=cam_y)
+
+
+def check_contact_probes(descent_body, terrain_height_func, world_width=None):
+    """
+    Check if any contact probe is touching or below the terrain.
+    Probes always hang straight down regardless of lander orientation.
+
+    Args:
+        descent_body: Box2D body of the descent stage
+        terrain_height_func: Function that takes x coordinate and returns terrain height
+        world_width: World width for cylindrical wrapping (optional)
+
+    Returns:
+        bool: True if any probe has made contact with terrain
+    """
+    data = getattr(descent_body, "userData", None)
+    if not data or data.get("type") != "descent":
+        return False
+
+    for probe_attach, probe_length, side in data.get("contact_probes", []):
+        # Transform attachment point to world coordinates
+        attach_world = descent_body.transform * probe_attach
+        # Probe tip is straight down from attachment point
+        probe_tip_y = attach_world.y - probe_length
+
+        # Get terrain height at probe x position (with wrapping if needed)
+        probe_x = attach_world.x
+        if world_width is not None:
+            probe_x = probe_x % world_width
+
+        terrain_height = terrain_height_func(probe_x)
+
+        # Check if probe tip is at or below terrain
+        if probe_tip_y <= terrain_height:
+            return True
+
+    return False

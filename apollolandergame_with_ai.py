@@ -31,6 +31,7 @@ from apollolander import (
     draw_rcs_pods,
     draw_thrusters,
     world_to_screen,
+    check_contact_probes,
     PPM,
     RCS_THRUST_FACTOR,
     RCS_OFFSET_X,
@@ -191,6 +192,7 @@ class GameState:
         self.docked = False
         self.game_over = False
         self.stage = "descent"  # "descent", "surface", "ascent", "orbit"
+        self.contact_light = False  # Contact probe detected surface
 
         # AI autopilot state
         self.ai_enabled = False
@@ -210,6 +212,7 @@ class GameState:
         self.docked = False
         self.game_over = False
         self.stage = "descent"
+        self.contact_light = False
         # Keep AI state when resetting
         self.ai_prev_raw_angle = 0.0
         self.ai_cumulative_angle = 0.0
@@ -762,6 +765,11 @@ def main():
             lander_pos = lander.descent_stage.position
             lander_angle = lander.descent_stage.angle
 
+            # Disable descent engine after contact light (like real Apollo procedure)
+            if game_state.contact_light:
+                main_thrust = False
+                descent_throttle = 0.0
+
             # Main engine thrust
             if main_thrust and descent_fuel > 0:
                 # Calculate total lander mass (both stages welded together)
@@ -924,6 +932,13 @@ def main():
         # Update satellite position and wrapping
         if satellite:
             satellite.update(TIME_STEP)
+
+        # Check contact probes (lunar surface sensing probes)
+        if lander and not game_state.crashed and not game_state.landed and not game_state.contact_light:
+            if check_contact_probes(lander.descent_stage, lambda x: get_terrain_height_at(x, terrain_pts), WORLD_WIDTH):
+                game_state.contact_light = True
+                # Auto-cutoff descent engine on contact (like real Apollo)
+                descent_throttle = 0.0
 
         # Check landing/crash conditions
         if lander and not game_state.crashed and not game_state.landed:
@@ -1225,6 +1240,13 @@ def main():
             gimbal_color = (255, 255, 100) if descent_gimbal_deg != 0 else (150, 150, 150)
             text = font_hud.render(f"GMB:  {descent_gimbal_deg:+5.1f}°", True, gimbal_color)
             screen.blit(text, (hud_x, hud_y))
+            hud_y += line_height
+
+            # Contact light indicator (like Apollo's "CONTACT LIGHT" callout)
+            if game_state.contact_light:
+                contact_color = (0, 255, 255)  # Bright cyan - very visible
+                text = font_hud.render("CONTACT", True, contact_color)
+                screen.blit(text, (hud_x, hud_y))
 
         # Draw fuel gauge (vertical bar on left side)
         gauge_x = 10
