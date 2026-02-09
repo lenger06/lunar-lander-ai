@@ -188,6 +188,44 @@ Uses Isp = 311 s vs the real 299–305 s, giving ~2% lower consumption. Lander m
 
 The AI game gives 4× the real fuel budget but burns it ~49× faster, resulting in fuel depleting about 12× faster than reality. This creates meaningful fuel pressure for a 20–40 second landing scenario. The constant mass means TWR stays fixed at 2.71 throughout — the AI was trained against this, so it's consistent but less realistic than the manual game.
 
+### Propellant System & Center of Gravity
+
+Both game versions model separate fuel and oxidizer tanks with realistic Apollo LM characteristics:
+
+#### Propellant Tanks
+
+| Component | Mass | Percentage | Notes |
+|-----------|------|------------|-------|
+| Fuel (Aerozine 50) | 3,164 kg | 38.4% | Hypergolic fuel |
+| Oxidizer (N2O4) | 5,084 kg | 61.6% | Nitrogen tetroxide |
+| **Total Propellant** | **8,248 kg** | 100% | |
+| Mixture ratio | 1.6:1 | (oxidizer:fuel) | By mass consumption |
+
+The fuel and oxidizer are consumed at the 1.6:1 mixture ratio, so both tanks deplete at the same rate (percentage-wise). The HUD displays separate FUEL and OXID gauges.
+
+#### Center of Gravity Dynamics
+
+| Parameter | Game | Real Apollo LM | Notes |
+|-----------|------|----------------|-------|
+| Dry structure CG offset | 0.15 m | Variable | Equipment asymmetry |
+| Propellant CG | Centered on thrust axis | ~Centered | Symmetric tank arrangement |
+| CG shift direction | Toward dry structure as fuel depletes | Same behavior | Weighted average |
+
+As propellant is consumed, the center of gravity shifts toward the dry structure's offset position. With full tanks (~8,248 kg propellant vs ~2,034 kg dry mass), the propellant mass dominates and CG is near the thrust axis. As propellant depletes, the weighted average CG moves toward the dry structure's offset (0.15 m right of thrust axis in the game).
+
+#### Automatic Gimbal Compensation
+
+The descent engine automatically gimbals to keep the thrust vector passing through the shifting CG — matching the real Apollo LM's DECA (Descent Engine Control Assembly):
+
+| Parameter | Game | Real Apollo LM |
+|-----------|------|----------------|
+| Auto-gimbal | Always on | Always on (DECA) |
+| Gimbal range | ±6° | ±6° |
+| Control gain | 2.0 | Continuous servo |
+| Deadband | 0.01 m | Small deadband |
+
+The HUD displays gimbal breakdown: total gimbal angle, auto-gimbal component (CG compensation), and manual trim (player input via Comma/Period keys). The CG indicator shows current lateral CG offset.
+
 ### Summary
 
 | Category | Accuracy |
@@ -241,10 +279,11 @@ The real Apollo LM was controlled by two hand controllers, a guidance computer (
 
 | | Game — Manual | Game — AI | Real Apollo LM |
 |-|---------------|-----------|----------------|
-| **Control** | Manual — Comma/Period/Slash keys | Not available (fixed at 0°) | Automatic — LGC trims gimbal to keep thrust through CG |
+| **Control** | Auto-gimbal + manual trim (Comma/Period/Slash) | Not available (fixed at 0°) | Automatic — DECA trims gimbal to keep thrust through CG |
 | **Range** | ±6° | N/A | ±6° in pitch and roll |
-| **Rate** | 1° per key press | N/A | Continuous servo-driven |
-| **Purpose** | Pilot-controlled thrust vectoring | N/A | CG offset compensation (automatic trim) |
+| **Auto-gimbal** | Yes — compensates for CG shift | N/A | Yes — DECA (Descent Engine Control Assembly) |
+| **Manual trim** | ±1° per key press, additive with auto | N/A | Available via hand controller |
+| **Purpose** | CG compensation (auto) + pilot fine-tuning (manual) | N/A | CG offset compensation (automatic trim) |
 
 #### Guidance Computer
 

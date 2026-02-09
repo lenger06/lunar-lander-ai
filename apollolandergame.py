@@ -126,6 +126,33 @@ ASCENT_FUEL_RATE = 15600.0 / (311.0 * 9.81)   # ~5.12 kg/s (real Apollo ascent)
 CSM_FUEL_RATE = 91190.0 / (314.0 * 9.81)      # ~29.59 kg/s (real Apollo SPS)
 RCS_FUEL_RATE = 0.1  # kg per thruster per second (negligible for gameplay)
 
+# Separate propellant tanks (real Apollo specifications)
+# Total descent propellant: 8,248 kg
+# Fuel (Aerozine 50): 3,164 kg (38.4%) - stored on left side
+# Oxidizer (N2O4): 5,084 kg (61.6%) - stored on right side
+# Mixture ratio: 1.6:1 (oxidizer to fuel by mass)
+MAX_DESCENT_FUEL_KG = 3164.0       # Aerozine 50 fuel only
+MAX_DESCENT_OXIDIZER_KG = 5084.0   # Nitrogen tetroxide oxidizer
+MIXTURE_RATIO = 1.6                 # Oxidizer:Fuel consumption ratio
+
+# Propellant consumption rates split by mixture ratio
+# Total: 14.77 kg/s, Fuel: 14.77/2.6 = 5.68 kg/s, Oxidizer: 5.68*1.6 = 9.09 kg/s
+DESCENT_FUEL_RATE_KG = DESCENT_FUEL_RATE / (1.0 + MIXTURE_RATIO)      # ~5.68 kg/s
+DESCENT_OXIDIZER_RATE_KG = DESCENT_FUEL_RATE_KG * MIXTURE_RATIO       # ~9.09 kg/s
+
+# CG shift model (realistic Apollo behavior)
+# The dry structure CG is offset from the thrust axis due to:
+# - Asymmetric equipment placement
+# - Manufacturing tolerances
+# - The real LM started with ~1.5° gimbal offset to compensate
+# As propellant depletes, CG shifts toward the dry structure's offset position
+DRY_STRUCTURE_CG_OFFSET_X = 0.15  # meters (dry structure CG is right of thrust axis)
+PROPELLANT_CG_OFFSET_X = 0.0      # Propellant tanks are symmetric around thrust axis
+
+# Auto-gimbal configuration for CG compensation
+AUTO_GIMBAL_GAIN = 2.0            # Proportional gain (reduced - realistic CG shift is subtler)
+AUTO_GIMBAL_DEADBAND = 0.01       # Meters (ignore tiny offsets)
+
 # Scoring
 BASE_LANDING_SCORE = 500
 UNDOCKING_BONUS = 200  # Bonus for successful undocking from CSM
@@ -168,6 +195,84 @@ class GameState:
 
 
 # -------------------------------------------------
+# CG and Auto-Gimbal Functions
+# -------------------------------------------------
+def calculate_cg_offset(fuel_units, oxidizer_units, dry_mass_units):
+    """
+    Calculate lateral CG offset based on propellant depletion.
+
+    Models realistic Apollo LM behavior: the dry structure has a slight
+    CG offset from the thrust axis (due to equipment, crew cabin, etc.).
+    The propellant tanks are symmetric around the thrust axis.
+
+    As propellant is consumed, the CG shifts toward the dry structure's
+    offset position (weighted average moves toward heavier component).
+
+    Args:
+        fuel_units: Current fuel mass (scaled units)
+        oxidizer_units: Current oxidizer mass (scaled units)
+        dry_mass_units: Dry mass of descent stage (scaled units)
+
+    Returns:
+        cg_offset_x: Lateral offset of CG from thrust axis (meters)
+                     Positive = CG is right of thrust axis
+    """
+    propellant_mass = fuel_units + oxidizer_units
+    total_mass = dry_mass_units + propellant_mass
+    if total_mass <= 0:
+        return 0.0
+
+    # Weighted average of dry structure CG and propellant CG
+    # Dry structure is offset, propellant is centered on thrust axis
+    moment = (dry_mass_units * DRY_STRUCTURE_CG_OFFSET_X +
+              propellant_mass * PROPELLANT_CG_OFFSET_X)
+    return moment / total_mass
+
+
+def calculate_auto_gimbal(cg_offset_x):
+    """
+    Calculate gimbal angle to keep thrust vector through CG.
+
+    When CG shifts laterally, thrust (applied at engine) creates unwanted torque.
+    To compensate, gimbal the engine to point thrust through the CG.
+
+    Args:
+        cg_offset_x: Lateral CG offset (meters, negative = left)
+
+    Returns:
+        auto_gimbal_deg: Recommended gimbal angle for CG compensation
+    """
+    if abs(cg_offset_x) < AUTO_GIMBAL_DEADBAND:
+        return 0.0
+
+    # Engine is ~2m below CG
+    # tan(theta) = cg_offset_x / vertical_distance
+    engine_to_cg_vertical = 2.0  # meters
+    angle_rad = math.atan2(cg_offset_x, engine_to_cg_vertical)
+    angle_deg = math.degrees(angle_rad) * AUTO_GIMBAL_GAIN
+
+    # Clamp to gimbal limits
+    return max(-MAX_GIMBAL_DEG, min(MAX_GIMBAL_DEG, angle_deg))
+
+
+def compute_final_gimbal(auto_gimbal_deg, manual_gimbal_deg):
+    """
+    Combine automatic CG compensation with manual gimbal input.
+
+    Auto-gimbal provides baseline, manual input is additive for trim.
+
+    Args:
+        auto_gimbal_deg: Computed CG compensation
+        manual_gimbal_deg: Player input from comma/period keys
+
+    Returns:
+        final_gimbal_deg: Combined gimbal angle (clamped to limits)
+    """
+    combined = auto_gimbal_deg + manual_gimbal_deg
+    return max(-MAX_GIMBAL_DEG, min(MAX_GIMBAL_DEG, combined))
+
+
+# -------------------------------------------------
 # Main Game
 # -------------------------------------------------
 def main():
@@ -197,11 +302,16 @@ def main():
     spawn_y = 0.0
     cam_x = 0.0
     cam_y = 0.0
-    descent_fuel = 0.0
+    descent_fuel = 0.0  # Legacy total (for compatibility)
+    descent_fuel_kg = 0.0      # Aerozine 50 fuel
+    descent_oxidizer_kg = 0.0  # N2O4 oxidizer
     ascent_fuel = 0.0
     csm_fuel = 0.0
     descent_throttle = 0.0
-    descent_gimbal_deg = 0.0
+    descent_gimbal_deg = 0.0   # Combined gimbal angle (auto + manual)
+    auto_gimbal_deg = 0.0      # Auto-gimbal CG compensation
+    manual_gimbal_deg = 0.0    # Player manual gimbal input
+    cg_offset_x = 0.0          # Current CG offset from center (meters)
     sky = None  # Star field with parallax
 
     # Start new game
@@ -209,7 +319,9 @@ def main():
         """Initialize a new game session."""
         nonlocal world, terrain_gen, terrain_body, terrain_pts, pads_info
         nonlocal lander, target_pad, target_pad_index, cam_x, cam_y, csm, csm_altitude
-        nonlocal descent_fuel, ascent_fuel, csm_fuel, descent_throttle, descent_gimbal_deg
+        nonlocal descent_fuel, descent_fuel_kg, descent_oxidizer_kg
+        nonlocal ascent_fuel, csm_fuel, descent_throttle
+        nonlocal descent_gimbal_deg, auto_gimbal_deg, manual_gimbal_deg, cg_offset_x
         nonlocal csm_x, spawn_x, spawn_y, max_world_height, sky
 
         # Reset game state
@@ -365,14 +477,19 @@ def main():
         cam_x = lander.ascent_stage.position.x
         cam_y = lander.ascent_stage.position.y
 
-        # Fuel
-        descent_fuel = MAX_DESCENT_FUEL
+        # Fuel (separate tanks for descent)
+        descent_fuel = MAX_DESCENT_FUEL  # Legacy total for compatibility
+        descent_fuel_kg = MAX_DESCENT_FUEL_KG       # Aerozine 50
+        descent_oxidizer_kg = MAX_DESCENT_OXIDIZER_KG  # N2O4
         ascent_fuel = MAX_ASCENT_FUEL
         csm_fuel = MAX_CSM_FUEL
 
         # Descent engine controls
         descent_throttle = 0.0
-        descent_gimbal_deg = 0.0
+        descent_gimbal_deg = 0.0   # Combined gimbal
+        auto_gimbal_deg = 0.0      # Auto CG compensation
+        manual_gimbal_deg = 0.0    # Player input
+        cg_offset_x = 0.0          # CG offset from center
 
     # Initialize first game
     new_game()
@@ -464,13 +581,14 @@ def main():
                         # Smooth decrement from 100% to 10%
                         descent_throttle = max(0.10, descent_throttle - 0.01)
 
-                # Gimbal left/right (comma/period) and recenter (/)
+                # Manual gimbal trim (comma/period) and recenter (/)
+                # This adjusts manual_gimbal_deg; auto_gimbal_deg is computed automatically
                 if keys[pygame.K_COMMA]:
-                    descent_gimbal_deg = max(-MAX_GIMBAL_DEG, descent_gimbal_deg - 0.15)
+                    manual_gimbal_deg = max(-MAX_GIMBAL_DEG, manual_gimbal_deg - 0.15)
                 if keys[pygame.K_PERIOD]:
-                    descent_gimbal_deg = min(MAX_GIMBAL_DEG, descent_gimbal_deg + 0.15)
+                    manual_gimbal_deg = min(MAX_GIMBAL_DEG, manual_gimbal_deg + 0.15)
                 if keys[pygame.K_SLASH]:
-                    descent_gimbal_deg = 0.0
+                    manual_gimbal_deg = 0.0  # Reset manual trim only
             else:
                 # Once separated, descent engine is off
                 descent_throttle = 0.0
@@ -491,24 +609,46 @@ def main():
 
             # Main engines
             if not ascent_freed:
-                # Descent engine (variable thrust)
-                if descent_throttle > 0.0 and descent_fuel > 0 and controls_enabled:
+                # Descent engine (variable thrust) - requires both fuel AND oxidizer
+                if descent_throttle > 0.0 and descent_fuel_kg > 0 and descent_oxidizer_kg > 0 and controls_enabled:
                     main_descent_on = True
-                    # Thrust with gimbal
+
+                    # Calculate CG offset from asymmetric propellant depletion
+                    cg_offset_x = calculate_cg_offset(descent_fuel_kg, descent_oxidizer_kg, DESCENT_DRY_MASS)
+
+                    # Auto-gimbal compensation for CG offset
+                    auto_gimbal_deg = calculate_auto_gimbal(cg_offset_x)
+
+                    # Combine auto-gimbal with manual input
+                    descent_gimbal_deg = compute_final_gimbal(auto_gimbal_deg, manual_gimbal_deg)
+
+                    # Thrust direction with combined gimbal angle
                     rad = math.radians(descent_gimbal_deg)
                     local_dir = b2Vec2(math.sin(rad), math.cos(rad))
                     thrust_vec = descent.GetWorldVector((local_dir.x, local_dir.y))
+
+                    # Apply thrust at engine bell position for realistic torque
+                    # Engine is approximately 2m below descent stage center
+                    engine_local = b2Vec2(0.0, -2.0)
+                    engine_world = descent.GetWorldPoint(engine_local)
                     descent.ApplyForce(
                         descent.mass * DESCENT_THRUST_FACTOR * descent_throttle * thrust_vec,
-                        descent.worldCenter,
+                        engine_world,
                         True,
                     )
-                    # Consume fuel
-                    descent_fuel -= DESCENT_FUEL_RATE * descent_throttle * TIME_STEP
-                    descent_fuel = max(0.0, descent_fuel)
 
-                    # Update descent stage mass (dry mass + remaining fuel)
-                    new_mass = (DESCENT_DRY_MASS + descent_fuel) / MASS_SCALE
+                    # Consume propellants at mixture ratio (1.6:1 oxidizer:fuel)
+                    fuel_consumed = DESCENT_FUEL_RATE_KG * descent_throttle * TIME_STEP
+                    oxidizer_consumed = DESCENT_OXIDIZER_RATE_KG * descent_throttle * TIME_STEP
+                    descent_fuel_kg = max(0.0, descent_fuel_kg - fuel_consumed)
+                    descent_oxidizer_kg = max(0.0, descent_oxidizer_kg - oxidizer_consumed)
+
+                    # Update legacy total for compatibility (HUD, etc.)
+                    descent_fuel = descent_fuel_kg + descent_oxidizer_kg
+
+                    # Update descent stage mass (dry mass + remaining propellants)
+                    total_propellant = descent_fuel_kg + descent_oxidizer_kg
+                    new_mass = (DESCENT_DRY_MASS + total_propellant) / MASS_SCALE
                     mass_data = descent.massData
                     mass_data.mass = new_mass
                     descent.massData = mass_data
@@ -1691,18 +1831,21 @@ def main():
         terrain_height = get_terrain_height_at(active_body.position.x, terrain_pts)
         hud.draw_telemetry(screen, active_body, terrain_height, mode)
 
-        # Fuel gauges (moved to left side to avoid mini-map)
-        hud.draw_fuel_gauge(
+        # Propellant gauges (moved to left side to avoid mini-map)
+        # Descent stage: separate fuel and oxidizer gauges
+        hud.draw_propellant_gauges(
             screen,
             10,
             160,
-            descent_fuel,
-            MAX_DESCENT_FUEL,
-            "DESC",
+            descent_fuel_kg,
+            MAX_DESCENT_FUEL_KG,
+            descent_oxidizer_kg,
+            MAX_DESCENT_OXIDIZER_KG,
         )
+        # Ascent and CSM still use single fuel gauges
         hud.draw_fuel_gauge(
             screen,
-            50,
+            75,
             160,
             ascent_fuel,
             MAX_ASCENT_FUEL,
@@ -1710,12 +1853,17 @@ def main():
         )
         hud.draw_fuel_gauge(
             screen,
-            90,
+            115,
             160,
             csm_fuel,
             MAX_CSM_FUEL,
             "CSM",
         )
+
+        # CG indicator and gimbal breakdown (only during descent phase)
+        if not ascent_freed and game_state.playing:
+            hud.draw_cg_indicator(screen, cg_offset_x)
+            hud.draw_gimbal_breakdown(screen, descent_gimbal_deg, auto_gimbal_deg, manual_gimbal_deg)
 
         # Navigation (show target pad before landing, CSM after landing)
         # Moved to left side to avoid mini-map

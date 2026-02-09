@@ -172,6 +172,30 @@ print(f"   Descent thrust: {DESCENT_THRUST_FACTOR:.2f}x mass")
 print(f"   Ascent thrust: {ASCENT_THRUST_FACTOR:.2f}x mass")
 print(f"   Atmosphere: {'None' if LINEAR_DAMPING == 0.0 else f'Linear damping {LINEAR_DAMPING}, Angular damping {ANGULAR_DAMPING}'}")
 
+# Separate propellant tanks (scaled for gameplay)
+# Real Apollo ratio: 3,164 kg fuel / 5,084 kg oxidizer = 38.4% / 61.6%
+# Mixture ratio: 1.6:1 (oxidizer to fuel by mass)
+PROPELLANT_SCALE = 100.0  # Scale factor to convert real kg to game units
+MAX_DESCENT_FUEL_UNITS = 3164.0 / PROPELLANT_SCALE      # ~31.64 units Aerozine 50
+MAX_DESCENT_OXIDIZER_UNITS = 5084.0 / PROPELLANT_SCALE  # ~50.84 units N2O4
+MIXTURE_RATIO = 1.6  # Oxidizer:Fuel consumption ratio
+
+# CG shift model (realistic Apollo behavior)
+# The dry structure CG is offset from the thrust axis due to:
+# - Asymmetric equipment placement
+# - Manufacturing tolerances
+# - The real LM started with ~1.5° gimbal offset to compensate
+# As propellant depletes, CG shifts toward the dry structure's offset position
+DRY_STRUCTURE_CG_OFFSET_X = 0.15  # meters (dry structure CG is right of thrust axis)
+PROPELLANT_CG_OFFSET_X = 0.0      # Propellant tanks are symmetric around thrust axis
+
+# Auto-gimbal configuration for CG compensation
+AUTO_GIMBAL_GAIN = 2.0            # Proportional gain (reduced - realistic CG shift is subtler)
+AUTO_GIMBAL_DEADBAND = 0.01       # Meters (ignore tiny offsets)
+
+# Dry mass for CG calculation (scaled)
+DESCENT_DRY_MASS_SCALED = 2034.0 / PROPELLANT_SCALE  # ~20.34 units
+
 # Game world size
 SCALE_FACTOR = 1000.0
 PLANET_DIAMETER_METERS = PLANET["diameter"] * 1000.0 / SCALE_FACTOR
@@ -434,6 +458,75 @@ def _print_summary(results, ensemble_seeds):
 
 
 # -------------------------------------------------
+# CG and Auto-Gimbal Functions
+# -------------------------------------------------
+def calculate_cg_offset(fuel_units, oxidizer_units, dry_mass_units):
+    """
+    Calculate lateral CG offset based on propellant depletion.
+
+    Models realistic Apollo LM behavior where:
+    - Dry structure CG is offset from thrust axis (manufacturing tolerance, equipment)
+    - Propellant CG is centered (symmetric tank arrangement)
+    - As propellant depletes, overall CG shifts toward dry structure's offset
+
+    The real LM started with ~1.5° gimbal offset and adjusted throughout descent.
+
+    Args:
+        fuel_units: Current fuel amount (scaled units)
+        oxidizer_units: Current oxidizer amount (scaled units)
+        dry_mass_units: Dry mass (scaled units)
+
+    Returns:
+        cg_offset_x: Lateral offset of CG from thrust axis (meters)
+    """
+    propellant_mass = fuel_units + oxidizer_units
+    total_mass = dry_mass_units + propellant_mass
+    if total_mass <= 0:
+        return 0.0
+
+    # Weighted average of dry structure CG and propellant CG
+    # CG = (dry_mass * dry_cg + propellant_mass * propellant_cg) / total_mass
+    moment = (dry_mass_units * DRY_STRUCTURE_CG_OFFSET_X +
+              propellant_mass * PROPELLANT_CG_OFFSET_X)
+    return moment / total_mass
+
+
+def calculate_auto_gimbal(cg_offset_x):
+    """
+    Calculate gimbal angle to keep thrust through CG.
+
+    Args:
+        cg_offset_x: Lateral CG offset (meters)
+
+    Returns:
+        auto_gimbal_deg: Recommended gimbal angle
+    """
+    if abs(cg_offset_x) < AUTO_GIMBAL_DEADBAND:
+        return 0.0
+
+    engine_to_cg_vertical = 2.0  # meters
+    angle_rad = math.atan2(cg_offset_x, engine_to_cg_vertical)
+    angle_deg = math.degrees(angle_rad) * AUTO_GIMBAL_GAIN
+
+    return max(-MAX_GIMBAL_DEG, min(MAX_GIMBAL_DEG, angle_deg))
+
+
+def compute_final_gimbal(auto_gimbal_deg, manual_gimbal_deg):
+    """
+    Combine auto-gimbal with manual input.
+
+    Args:
+        auto_gimbal_deg: CG compensation
+        manual_gimbal_deg: Player input
+
+    Returns:
+        Combined gimbal angle (clamped)
+    """
+    combined = auto_gimbal_deg + manual_gimbal_deg
+    return max(-MAX_GIMBAL_DEG, min(MAX_GIMBAL_DEG, combined))
+
+
+# -------------------------------------------------
 # Main Game
 # -------------------------------------------------
 def main():
@@ -489,12 +582,17 @@ def main():
     spawn_y = 0.0
     cam_x = 0.0
     cam_y = 0.0
-    descent_fuel = 0.0
+    descent_fuel = 0.0  # Legacy total for compatibility
+    descent_fuel_units = 0.0      # Aerozine 50 (scaled units)
+    descent_oxidizer_units = 0.0  # N2O4 (scaled units)
     ascent_fuel = 0.0
     csm_fuel = 0.0
     descent_throttle = 0.0
-    descent_gimbal_deg = 0.0
-    max_descent_fuel = 82.0  # Real Apollo scaled
+    descent_gimbal_deg = 0.0      # Combined gimbal (auto + manual)
+    auto_gimbal_deg = 0.0         # Auto CG compensation
+    manual_gimbal_deg = 0.0       # Player manual input
+    cg_offset_x = 0.0             # CG offset from center (meters)
+    max_descent_fuel = 82.0       # Real Apollo scaled (legacy)
     sky = None  # Star field with parallax
     satellite = None  # Orbiting Sputnik-like satellite
 
@@ -502,7 +600,9 @@ def main():
         """Initialize a new game session."""
         nonlocal world, terrain_gen, terrain_body, terrain_pts, pads_info
         nonlocal lander, target_pad, target_pad_index, cam_x, cam_y, csm, csm_altitude
-        nonlocal descent_fuel, ascent_fuel, csm_fuel, descent_throttle, descent_gimbal_deg
+        nonlocal descent_fuel, descent_fuel_units, descent_oxidizer_units
+        nonlocal ascent_fuel, csm_fuel, descent_throttle
+        nonlocal descent_gimbal_deg, auto_gimbal_deg, manual_gimbal_deg, cg_offset_x
         nonlocal csm_x, spawn_x, spawn_y, max_world_height, max_descent_fuel, sky, satellite
 
         game_state.reset()
@@ -568,11 +668,19 @@ def main():
         csm_fuel = 0.0
 
         # Quadruple the fuel for better gameplay (4x real Apollo)
-        max_descent_fuel = 4 * 8200.0 / 100.0  # 328.0 units (4x real Apollo scaled)
-        descent_fuel = max_descent_fuel
+        # Separate tanks for fuel (Aerozine 50) and oxidizer (N2O4)
+        fuel_multiplier = 4.0  # 4x real Apollo for gameplay
+        descent_fuel_units = MAX_DESCENT_FUEL_UNITS * fuel_multiplier     # ~126.56 units
+        descent_oxidizer_units = MAX_DESCENT_OXIDIZER_UNITS * fuel_multiplier  # ~203.36 units
+        max_descent_fuel = (MAX_DESCENT_FUEL_UNITS + MAX_DESCENT_OXIDIZER_UNITS) * fuel_multiplier  # ~329.92 total
+        descent_fuel = descent_fuel_units + descent_oxidizer_units  # Legacy total
+
         ascent_fuel = 800.0
         descent_throttle = 0.6  # Start with 60% throttle (should hover at ~1.63x gravity force)
         descent_gimbal_deg = 0.0
+        auto_gimbal_deg = 0.0
+        manual_gimbal_deg = 0.0
+        cg_offset_x = 0.0
 
         cam_x = lander.ascent_stage.position.x
         cam_y = lander.ascent_stage.position.y
@@ -673,13 +781,14 @@ def main():
                     pad_mult = target_pad.get("mult", 1)
                     print(f"Target pad: {target_pad_index + 1}/{len(pads_info)} | x={pad_x:.0f}m | {pad_mult}x multiplier")
 
-                # Gimbal control (1 degree per key press, max 6 degrees)
+                # Manual gimbal trim (1 degree per key press)
+                # This adjusts manual_gimbal_deg; auto_gimbal_deg is computed automatically
                 elif event.key == pygame.K_COMMA:
-                    descent_gimbal_deg = max(-MAX_GIMBAL_DEG, descent_gimbal_deg - 1.0)
+                    manual_gimbal_deg = max(-MAX_GIMBAL_DEG, manual_gimbal_deg - 1.0)
                 elif event.key == pygame.K_PERIOD:
-                    descent_gimbal_deg = min(MAX_GIMBAL_DEG, descent_gimbal_deg + 1.0)
+                    manual_gimbal_deg = min(MAX_GIMBAL_DEG, manual_gimbal_deg + 1.0)
                 elif event.key == pygame.K_SLASH:
-                    descent_gimbal_deg = 0.0
+                    manual_gimbal_deg = 0.0  # Reset manual trim only
 
         # Get controls (manual or AI)
         keys = pygame.key.get_pressed()
@@ -770,8 +879,18 @@ def main():
                 main_thrust = False
                 descent_throttle = 0.0
 
-            # Main engine thrust
-            if main_thrust and descent_fuel > 0:
+            # Main engine thrust - requires both fuel AND oxidizer
+            if main_thrust and descent_fuel_units > 0 and descent_oxidizer_units > 0:
+                # Calculate CG offset from asymmetric propellant depletion
+                cg_offset_x = calculate_cg_offset(descent_fuel_units, descent_oxidizer_units,
+                                                   DESCENT_DRY_MASS_SCALED * 4.0)  # 4x scale
+
+                # Auto-gimbal compensation for CG offset
+                auto_gimbal_deg = calculate_auto_gimbal(cg_offset_x)
+
+                # Combine auto-gimbal with manual input
+                descent_gimbal_deg = compute_final_gimbal(auto_gimbal_deg, manual_gimbal_deg)
+
                 # Calculate total lander mass (both stages welded together)
                 total_mass = lander.descent_stage.mass + lander.ascent_stage.mass
                 thrust_magnitude = DESCENT_THRUST_FACTOR * total_mass * descent_throttle
@@ -779,14 +898,10 @@ def main():
                 total_angle = lander_angle + gimbal_rad
 
                 # Thrust direction: engine fires DOWN from lander, pushing lander UP
-                # In screen coords (Y-flipped), positive angle = nose tilts RIGHT visually
-                # Thrust should push opposite to where nose points (out the bottom of lander)
-                # Negate sin to correct for Y-flip in rendering
                 thrust_x = -thrust_magnitude * math.sin(total_angle)
                 thrust_y = thrust_magnitude * math.cos(total_angle)
 
-                # Apply thrust at the combined center of mass to avoid unwanted torque
-                # Calculate the combined center of mass of both stages
+                # Apply thrust at the combined center of mass (adjusted for CG offset)
                 descent_mass = lander.descent_stage.mass
                 ascent_mass = lander.ascent_stage.mass
                 descent_pos = lander.descent_stage.worldCenter
@@ -799,11 +914,16 @@ def main():
                 # Apply force at the combined center of mass (no torque)
                 lander.descent_stage.ApplyForce((thrust_x, thrust_y), combined_com, True)
 
-                # Realistic fuel consumption: Apollo descent engine burned ~8,200kg over ~12 minutes = ~11.4 kg/s
-                # At 60 FPS, that's ~0.19 kg per frame at 100% throttle
-                # With mass scale 100, that's 0.0019 units per frame
-                fuel_burn_rate = 0.12 * descent_throttle  # Adjusted for gameplay (was 2.0, too fast)
-                descent_fuel = max(0.0, descent_fuel - fuel_burn_rate)
+                # Consume propellants at mixture ratio (1.6:1 oxidizer:fuel)
+                # Total burn rate ~0.12 per frame at full throttle, split by ratio
+                total_burn_rate = 0.12 * descent_throttle
+                fuel_burn = total_burn_rate / (1.0 + MIXTURE_RATIO)     # ~0.046 per frame
+                oxidizer_burn = fuel_burn * MIXTURE_RATIO               # ~0.074 per frame
+                descent_fuel_units = max(0.0, descent_fuel_units - fuel_burn)
+                descent_oxidizer_units = max(0.0, descent_oxidizer_units - oxidizer_burn)
+
+                # Update legacy total for compatibility
+                descent_fuel = descent_fuel_units + descent_oxidizer_units
 
             # RCS thrusters - Individual thruster control
             # Each pod has 3 thrusters: up, down, and sideways
@@ -832,7 +952,7 @@ def main():
 
             # LEFT POD - UP THRUSTER (Numpad 7/Home)
             # Flame goes UP, reaction force pushes craft DOWN on left side -> rotates CLOCKWISE
-            if rcs_left_up and descent_fuel > 0:
+            if rcs_left_up and descent_fuel_units > 0 and descent_oxidizer_units > 0:
                 thrust_dir_local = b2Vec2(0.0, -1.0)  # Reaction force DOWN (flame goes UP)
                 thrust_dir_world = lander.ascent_stage.GetWorldVector(thrust_dir_local)
                 lander.ascent_stage.ApplyForce(
@@ -844,7 +964,7 @@ def main():
 
             # LEFT POD - DOWN THRUSTER (Numpad 1/End)
             # Flame goes DOWN, reaction force pushes craft UP on left side -> rotates COUNTER-CLOCKWISE
-            if rcs_left_down and descent_fuel > 0:
+            if rcs_left_down and descent_fuel_units > 0 and descent_oxidizer_units > 0:
                 thrust_dir_local = b2Vec2(0.0, 1.0)  # Reaction force UP (flame goes DOWN)
                 thrust_dir_world = lander.ascent_stage.GetWorldVector(thrust_dir_local)
                 lander.ascent_stage.ApplyForce(
@@ -856,7 +976,7 @@ def main():
 
             # LEFT POD - SIDE THRUSTER (Numpad 4/Left)
             # Flame goes LEFT (inward), reaction force pushes craft RIGHT -> translates RIGHT
-            if rcs_left_side and descent_fuel > 0:
+            if rcs_left_side and descent_fuel_units > 0 and descent_oxidizer_units > 0:
                 thrust_dir_local = b2Vec2(1.0, 0.0)  # Reaction force RIGHT (flame goes LEFT/inward)
                 thrust_dir_world = lander.ascent_stage.GetWorldVector(thrust_dir_local)
                 lander.ascent_stage.ApplyForce(
@@ -868,7 +988,7 @@ def main():
 
             # RIGHT POD - UP THRUSTER (Numpad 9/PgUp)
             # Flame goes UP, reaction force pushes craft DOWN on right side -> rotates COUNTER-CLOCKWISE
-            if rcs_right_up and descent_fuel > 0:
+            if rcs_right_up and descent_fuel_units > 0 and descent_oxidizer_units > 0:
                 thrust_dir_local = b2Vec2(0.0, -1.0)  # Reaction force DOWN (flame goes UP)
                 thrust_dir_world = lander.ascent_stage.GetWorldVector(thrust_dir_local)
                 lander.ascent_stage.ApplyForce(
@@ -880,7 +1000,7 @@ def main():
 
             # RIGHT POD - DOWN THRUSTER (Numpad 3/PgDn)
             # Flame goes DOWN, reaction force pushes craft UP on right side -> rotates CLOCKWISE
-            if rcs_right_down and descent_fuel > 0:
+            if rcs_right_down and descent_fuel_units > 0 and descent_oxidizer_units > 0:
                 thrust_dir_local = b2Vec2(0.0, 1.0)  # Reaction force UP (flame goes DOWN)
                 thrust_dir_world = lander.ascent_stage.GetWorldVector(thrust_dir_local)
                 lander.ascent_stage.ApplyForce(
@@ -892,7 +1012,7 @@ def main():
 
             # RIGHT POD - SIDE THRUSTER (Numpad 6/Right)
             # Flame goes RIGHT (inward), reaction force pushes craft LEFT -> translates LEFT
-            if rcs_right_side and descent_fuel > 0:
+            if rcs_right_side and descent_fuel_units > 0 and descent_oxidizer_units > 0:
                 thrust_dir_local = b2Vec2(-1.0, 0.0)  # Reaction force LEFT (flame goes RIGHT/inward)
                 thrust_dir_world = lander.ascent_stage.GetWorldVector(thrust_dir_local)
                 lander.ascent_stage.ApplyForce(
@@ -903,12 +1023,17 @@ def main():
                 thrusters_firing += 1
 
             # Fuel consumption based on number of thrusters firing
-            # Each thruster uses 0.01 fuel units per frame
+            # RCS uses small amount of propellant at mixture ratio
             if thrusters_firing > 0:
-                descent_fuel = max(0.0, descent_fuel - 0.01 * thrusters_firing)
+                rcs_total_burn = 0.01 * thrusters_firing
+                rcs_fuel_burn = rcs_total_burn / (1.0 + MIXTURE_RATIO)
+                rcs_oxidizer_burn = rcs_fuel_burn * MIXTURE_RATIO
+                descent_fuel_units = max(0.0, descent_fuel_units - rcs_fuel_burn)
+                descent_oxidizer_units = max(0.0, descent_oxidizer_units - rcs_oxidizer_burn)
+                descent_fuel = descent_fuel_units + descent_oxidizer_units
 
             # AI lateral translation (actions 5/6) — apply both pod forces in same direction
-            if game_state._ai_translate != 0 and descent_fuel > 0:
+            if game_state._ai_translate != 0 and descent_fuel_units > 0 and descent_oxidizer_units > 0:
                 translate_dir = float(game_state._ai_translate)  # -1.0 or 1.0
                 thrust_dir_local = b2Vec2(translate_dir, 0.0)
                 thrust_dir_world = lander.ascent_stage.GetWorldVector(thrust_dir_local)
@@ -923,7 +1048,13 @@ def main():
                 # Set side thruster flags for visualization
                 rcs_left_side = True
                 rcs_right_side = True
-                descent_fuel = max(0.0, descent_fuel - 0.02)
+                # Consume propellants for translation
+                translate_burn = 0.02
+                translate_fuel_burn = translate_burn / (1.0 + MIXTURE_RATIO)
+                translate_oxidizer_burn = translate_fuel_burn * MIXTURE_RATIO
+                descent_fuel_units = max(0.0, descent_fuel_units - translate_fuel_burn)
+                descent_oxidizer_units = max(0.0, descent_oxidizer_units - translate_oxidizer_burn)
+                descent_fuel = descent_fuel_units + descent_oxidizer_units
 
 
         # Update physics
@@ -1248,41 +1379,28 @@ def main():
                 text = font_hud.render("CONTACT", True, contact_color)
                 screen.blit(text, (hud_x, hud_y))
 
-        # Draw fuel gauge (vertical bar on left side)
-        gauge_x = 10
-        gauge_y = SCREEN_HEIGHT - 210
-        gauge_width = 30
-        gauge_height = 150
-
-        # Background
-        pygame.draw.rect(screen, (40, 40, 40), (gauge_x, gauge_y, gauge_width, gauge_height), 0)
-        pygame.draw.rect(screen, (255, 255, 255), (gauge_x, gauge_y, gauge_width, gauge_height), 2)
-
-        # Fuel level
+        # Draw propellant gauges (separate fuel and oxidizer)
         if lander:
-            fuel_ratio = max(0.0, min(1.0, descent_fuel / max_descent_fuel))
-            fuel_bar_height = int(gauge_height * fuel_ratio)
-            fuel_bar_y = gauge_y + gauge_height - fuel_bar_height
+            # Calculate max values for gauge display (4x scaled)
+            fuel_mult = 4.0
+            max_fuel_display = MAX_DESCENT_FUEL_UNITS * fuel_mult
+            max_oxidizer_display = MAX_DESCENT_OXIDIZER_UNITS * fuel_mult
+            hud.draw_propellant_gauges(
+                screen, 10, SCREEN_HEIGHT - 280,
+                descent_fuel_units, max_fuel_display,
+                descent_oxidizer_units, max_oxidizer_display,
+                width=25, height=120
+            )
 
-            # Color based on fuel level
-            if fuel_ratio > 0.5:
-                gauge_color = (100, 255, 100)
-            elif fuel_ratio > 0.25:
-                gauge_color = (255, 165, 0)
-            else:
-                gauge_color = (255, 100, 100)
-
-            if fuel_bar_height > 0:
-                pygame.draw.rect(screen, gauge_color, (gauge_x + 2, fuel_bar_y, gauge_width - 4, fuel_bar_height), 0)
-
-        # Label
-        font_small = pygame.font.SysFont("consolas", 12)
-        fuel_label = font_small.render("FUEL", True, (255, 255, 255))
-        screen.blit(fuel_label, (gauge_x + 2, gauge_y + gauge_height + 5))
+            # CG indicator and gimbal breakdown (below the gauges)
+            hud.draw_cg_indicator(screen, cg_offset_x, max_offset=0.5, x=10, y=SCREEN_HEIGHT - 115)
+            hud.draw_gimbal_breakdown(screen, descent_gimbal_deg, auto_gimbal_deg, manual_gimbal_deg,
+                                       x=10, y=SCREEN_HEIGHT - 70)
 
         # Draw attitude indicator (circular dial showing angle)
+        font_small = pygame.font.SysFont("consolas", 12)
         if lander:
-            att_center_x = 80
+            att_center_x = 140
             att_center_y = SCREEN_HEIGHT - 80
             att_radius = 50
 

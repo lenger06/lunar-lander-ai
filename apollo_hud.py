@@ -144,6 +144,164 @@ class ApolloHUD:
         percent_rect = percent_text.get_rect(centerx=x + width // 2, top=y + height + 20)
         surface.blit(percent_text, percent_rect)
 
+    def draw_propellant_gauges(self, surface, x, y, fuel_kg, max_fuel_kg,
+                                oxidizer_kg, max_oxidizer_kg, width=25, height=120):
+        """
+        Draw side-by-side fuel and oxidizer gauges with labels.
+
+        Shows Aerozine 50 (fuel) on left, N2O4 (oxidizer) on right.
+
+        Args:
+            surface: Pygame surface
+            x, y: Top-left position
+            fuel_kg: Current fuel mass (Aerozine 50)
+            max_fuel_kg: Maximum fuel capacity
+            oxidizer_kg: Current oxidizer mass (N2O4)
+            max_oxidizer_kg: Maximum oxidizer capacity
+            width, height: Individual gauge dimensions
+        """
+        gap = 5
+
+        # Fuel gauge (left, green theme) - Aerozine 50
+        self._draw_propellant_bar(surface, x, y, fuel_kg, max_fuel_kg,
+                                  "FUEL", width, height, "fuel")
+
+        # Oxidizer gauge (right, cyan theme) - N2O4
+        self._draw_propellant_bar(surface, x + width + gap, y,
+                                  oxidizer_kg, max_oxidizer_kg,
+                                  "OXID", width, height, "oxidizer")
+
+    def _draw_propellant_bar(self, surface, x, y, amount, max_amount,
+                              label, width, height, prop_type):
+        """Draw a single propellant bar with appropriate coloring."""
+        # Background
+        pygame.draw.rect(surface, (40, 40, 40), (x, y, width, height), 0)
+        pygame.draw.rect(surface, self.color_white, (x, y, width, height), 2)
+
+        # Fill level
+        ratio = max(0.0, min(1.0, amount / max_amount)) if max_amount > 0 else 0.0
+        fill_height = int(height * ratio)
+        fill_y = y + height - fill_height
+
+        # Color based on type and level
+        if prop_type == "oxidizer":
+            # Cyan theme for oxidizer
+            if ratio > 0.5:
+                color = self.color_cyan
+            elif ratio > 0.25:
+                color = self.color_orange
+            else:
+                color = self.color_red
+        else:
+            # Green theme for fuel
+            if ratio > 0.5:
+                color = self.color_green
+            elif ratio > 0.25:
+                color = self.color_orange
+            else:
+                color = self.color_red
+
+        if fill_height > 0:
+            pygame.draw.rect(surface, color, (x + 2, fill_y, width - 4, fill_height), 0)
+
+        # Label
+        label_text = self.font_small.render(label, True, self.color_white)
+        label_rect = label_text.get_rect(centerx=x + width // 2, top=y + height + 5)
+        surface.blit(label_text, label_rect)
+
+        # Percentage
+        percent_text = self.font_small.render(f"{int(ratio * 100)}%", True, self.color_white)
+        percent_rect = percent_text.get_rect(centerx=x + width // 2, top=y + height + 20)
+        surface.blit(percent_text, percent_rect)
+
+    def draw_cg_indicator(self, surface, cg_offset_x, max_offset=0.5, x=None, y=None):
+        """
+        Draw horizontal CG indicator showing lateral offset.
+
+        Displays a centered bar with a moving indicator showing
+        current CG position relative to geometric center.
+
+        Args:
+            surface: Pygame surface
+            cg_offset_x: Current CG offset (negative=left, positive=right)
+            max_offset: Maximum expected offset for scaling
+            x, y: Position (defaults to bottom-left area)
+        """
+        if x is None:
+            x = 10
+        if y is None:
+            y = self.screen_height - 50
+
+        bar_width = 100
+        bar_height = 12
+
+        # Label
+        label_text = self.font_small.render("CG OFFSET", True, self.color_white)
+        surface.blit(label_text, (x, y - 18))
+
+        # Background bar
+        pygame.draw.rect(surface, (40, 40, 40), (x, y, bar_width, bar_height), 0)
+        pygame.draw.rect(surface, self.color_white, (x, y, bar_width, bar_height), 2)
+
+        # Center line
+        center_x = x + bar_width // 2
+        pygame.draw.line(surface, self.color_gray, (center_x, y), (center_x, y + bar_height), 2)
+
+        # CG marker position
+        normalized = cg_offset_x / max_offset if max_offset > 0 else 0.0
+        normalized = max(-1.0, min(1.0, normalized))
+        marker_x = center_x + int(normalized * (bar_width // 2 - 5))
+
+        # Color based on offset magnitude
+        if abs(normalized) < 0.3:
+            marker_color = self.color_green
+        elif abs(normalized) < 0.6:
+            marker_color = self.color_yellow
+        else:
+            marker_color = self.color_red
+
+        # Draw marker
+        pygame.draw.rect(surface, marker_color, (marker_x - 3, y + 2, 6, bar_height - 4), 0)
+
+        # Numeric value
+        value_text = self.font_small.render(f"{cg_offset_x:+.2f}m", True, self.color_white)
+        surface.blit(value_text, (x + bar_width + 10, y - 2))
+
+    def draw_gimbal_breakdown(self, surface, total_gimbal, auto_gimbal, manual_gimbal, x=None, y=None):
+        """
+        Draw gimbal indicator with auto/manual breakdown.
+
+        Args:
+            surface: Pygame surface
+            total_gimbal: Combined gimbal angle (degrees)
+            auto_gimbal: Auto CG compensation component
+            manual_gimbal: Manual player input component
+            x, y: Position (defaults to bottom-left area)
+        """
+        if x is None:
+            x = 10
+        if y is None:
+            y = self.screen_height - 130
+
+        line_height = 16
+
+        # Total gimbal
+        total_color = self.color_yellow if abs(total_gimbal) > 0.5 else self.color_gray
+        text = self.font_small.render(f"GIMBAL: {total_gimbal:+5.1f}\u00b0", True, total_color)
+        surface.blit(text, (x, y))
+        y += line_height
+
+        # Auto component (cyan when active)
+        auto_color = self.color_cyan if abs(auto_gimbal) > 0.1 else self.color_gray
+        text = self.font_small.render(f"  Auto:  {auto_gimbal:+5.1f}\u00b0", True, auto_color)
+        surface.blit(text, (x, y))
+        y += line_height
+
+        # Manual component (yellow when active)
+        manual_color = self.color_yellow if abs(manual_gimbal) > 0.1 else self.color_gray
+        text = self.font_small.render(f"  Trim:  {manual_gimbal:+5.1f}\u00b0", True, manual_color)
+        surface.blit(text, (x, y))
+
     def draw_navigation(self, surface, lander_x, target_x, world_pos_x, pos_x=None, pos_y=None):
         """
         Draw navigation panel.
