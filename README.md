@@ -122,8 +122,11 @@ The real DPS had a restricted throttle band (65%–92.5% avoided due to nozzle e
 | Configuration | 4 pods × 4 thrusters | 4 pods × 4 thrusters | Exact |
 | **Game boost** | **15×** | 1× | Gameplay scaling |
 | Effective per-thruster | 6,675 N | 445 N | 15× stronger |
+| **Thrust model** | **Fixed (66.75 force units)** | Mass-proportional | Consistent across all flight phases |
 
 The 15× RCS boost is the largest deliberate deviation from reality. At real thrust levels, RCS provides very gentle rotational authority — appropriate for the real LM's slow orbital descent over many minutes, but too sluggish for a game where responsive control is needed in a short time window.
+
+Both the manual game (`apollolandergame.py`) and AI game now use identical fixed RCS thrust values (15× × 445 N / 100 = 66.75 force units per thruster), ensuring consistent control authority regardless of vehicle mass. This matches the AI training physics and provides responsive control throughout all mission phases (descent, ascent, CSM operations).
 
 ### Dimensions
 

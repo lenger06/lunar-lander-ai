@@ -548,10 +548,13 @@ def main():
                         ascent.massData = ascent_mass_data
 
             # RCS forces (on ascent module OR CSM after jettison)
+            # Use 15x boosted RCS thrust (matches AI game for responsive control)
+            # Real Apollo: 445 N per thruster, boosted: 6,675 N equivalent
+            rcs_thrust_per_thruster = 15.0 * 445.0 / 100.0  # 66.75 force units
             if game_state.jettisoned:
                 # Use CSM for RCS
                 rcs_body = csm.body
-                rcs_force_mag = csm.body.mass * RCS_THRUST_FACTOR
+                rcs_force_mag = rcs_thrust_per_thruster
                 # CSM RCS offsets (use CSM scale)
                 csm_scale_rcs = 1.125
                 rcs_x = RCS_OFFSET_X * csm_scale_rcs
@@ -560,7 +563,7 @@ def main():
             else:
                 # Use ascent module for RCS
                 rcs_body = ascent
-                rcs_force_mag = ascent.mass * RCS_THRUST_FACTOR
+                rcs_force_mag = rcs_thrust_per_thruster
                 rcs_x = RCS_OFFSET_X * asc_scale
                 rcs_y = RCS_OFFSET_Y * asc_scale
                 up_off = RCS_OFFSET_UP * asc_scale
