@@ -41,6 +41,8 @@ from apollolander import (
 )
 from apollo_hud import ApolloHUD
 from apollocsm import ApolloCSM
+from apollo_sky import ApolloSky, draw_sky_pygame
+from satellite import Satellite
 
 # Try to import AI agent
 AI_AVAILABLE = False
@@ -490,13 +492,15 @@ def main():
     descent_throttle = 0.0
     descent_gimbal_deg = 0.0
     max_descent_fuel = 82.0  # Real Apollo scaled
+    sky = None  # Star field with parallax
+    satellite = None  # Orbiting Sputnik-like satellite
 
     def new_game():
         """Initialize a new game session."""
         nonlocal world, terrain_gen, terrain_body, terrain_pts, pads_info
         nonlocal lander, target_pad, target_pad_index, cam_x, cam_y, csm, csm_altitude
         nonlocal descent_fuel, ascent_fuel, csm_fuel, descent_throttle, descent_gimbal_deg
-        nonlocal csm_x, spawn_x, spawn_y, max_world_height, max_descent_fuel
+        nonlocal csm_x, spawn_x, spawn_y, max_world_height, max_descent_fuel, sky, satellite
 
         game_state.reset()
         world = b2World(gravity=(0, LUNAR_GRAVITY))
@@ -504,6 +508,14 @@ def main():
         # Generate terrain
         terrain_gen = ApolloTerrain(world_width_meters=WORLD_WIDTH, difficulty=TERRAIN_DIFFICULTY, roughness=TERRAIN_ROUGHNESS)
         terrain_body, terrain_pts, pads_info = terrain_gen.generate_terrain(world)
+
+        # Generate star field with parallax on inner cylinder (10% ratio = strong depth)
+        sky = ApolloSky(WORLD_WIDTH, SPAWN_ALTITUDE, star_cylinder_ratio=0.1, num_stars=800)
+
+        # Create orbiting satellite above lander start altitude, moving right
+        sat_x = random.uniform(0, WORLD_WIDTH)
+        sat_y = SPAWN_ALTITUDE * 1.3  # 65m - above lander's 50m start
+        satellite = Satellite(world, position=(sat_x, sat_y), velocity=8.0, scale=3.0, world_width=WORLD_WIDTH)
 
         # Select target pad
         target_pad_index = random.randint(0, len(pads_info) - 1)
@@ -909,6 +921,10 @@ def main():
         # Update physics
         world.Step(TIME_STEP, 10, 10)
 
+        # Update satellite position and wrapping
+        if satellite:
+            satellite.update(TIME_STEP)
+
         # Check landing/crash conditions
         if lander and not game_state.crashed and not game_state.landed:
             pos_x = lander.descent_stage.position.x
@@ -952,10 +968,20 @@ def main():
             cam_y = lander.ascent_stage.position.y
 
         # Rendering
-        screen.fill((0, 0, 20))
+        screen.fill((0, 0, 0))
+
+        # Draw stars with parallax effect (inner cylinder creates depth)
+        draw_sky_pygame(
+            screen, sky.get_stars(), sky.star_cylinder_ratio, sky.star_cylinder_width,
+            WORLD_WIDTH, terrain_pts, cam_x, cam_y, SCREEN_WIDTH, SCREEN_HEIGHT, PPM
+        )
 
         # Draw terrain
         draw_terrain_pygame(screen, terrain_pts, pads_info, cam_x, PPM, SCREEN_WIDTH, SCREEN_HEIGHT, cam_y, WORLD_WIDTH)
+
+        # Draw orbiting satellite
+        if satellite:
+            satellite.draw(screen, cam_x, cam_y, SCREEN_WIDTH, SCREEN_HEIGHT, PPM, WORLD_WIDTH)
 
         # Draw lander (draw ascent first, then descent on top)
         if lander:
@@ -1136,6 +1162,14 @@ def main():
             else:
                 lander_color = (0, 255, 0)  # Green when flying
             pygame.draw.circle(screen, lander_color, (lander_minimap_x, lander_minimap_y), 3)
+
+        # Draw satellite on minimap (orange dot)
+        if satellite:
+            sat_mx, sat_my = world_to_minimap(satellite.body.position.x, satellite.body.position.y)
+            sat_mx, sat_my = int(sat_mx), int(sat_my)
+            # Only draw if within minimap bounds
+            if minimap_x < sat_mx < minimap_x + minimap_width and minimap_y < sat_my < minimap_y + minimap_height:
+                pygame.draw.circle(screen, (255, 150, 0), (sat_mx, sat_my), 2)
 
         # Label
         font_mini = pygame.font.SysFont("Arial", 10, bold=True)

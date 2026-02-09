@@ -47,11 +47,12 @@ class ApolloSky:
             # Distribute stars across the star cylinder width using prime number spacing
             x = (i * 73.7) % self.star_cylinder_width
 
-            # Spread stars from surface (0) all the way to well above orbit
-            y = random.uniform(0.0, self.orbit_altitude * 2.0)
+            # Spread stars from below surface to above orbit for full sky coverage
+            # Range: -20m (below ground, will be occluded) to orbit_altitude * 1.5
+            y = random.uniform(-20.0, self.orbit_altitude * 1.5)
 
-            # Random brightness
-            brightness = random.randint(100, 255)
+            # Random brightness with more variation
+            brightness = random.randint(80, 255)
 
             self.stars.append((x, y, brightness))
 
@@ -66,7 +67,7 @@ class ApolloSky:
 
 
 def draw_sky_pygame(surface, stars, star_cylinder_ratio, star_cylinder_width, world_width,
-                    terrain_points, cam_x, cam_y, screen_width, screen_height, ppm):
+                    _terrain_points, cam_x, cam_y, screen_width, screen_height, ppm):
     """
     Draw sky with stars and parallax effect using pygame.
 
@@ -76,44 +77,41 @@ def draw_sky_pygame(surface, stars, star_cylinder_ratio, star_cylinder_width, wo
         star_cylinder_ratio: Ratio of star cylinder to world cylinder
         star_cylinder_width: Width of star cylinder in meters
         world_width: Width of world (outer cylinder) in meters
-        terrain_points: List of (x, y) terrain tuples for occlusion
+        _terrain_points: Unused (terrain drawn on top naturally occludes stars)
         cam_x: Camera X position in world coordinates
         cam_y: Camera Y position in world coordinates
         screen_width: Screen width in pixels
         screen_height: Screen height in pixels
         ppm: Pixels per meter
     """
-    import pygame
-    from apollo_terrain import get_terrain_height_at
 
-    def world_to_screen(pos):
-        sx = (pos[0] - cam_x) * ppm + screen_width / 2
-        sy = screen_height / 2 - (pos[1] - cam_y) * ppm
-        return int(sx), int(sy)
+    # Pre-calculate screen bounds for visibility check
+    half_width = screen_width / 2
+    half_height = screen_height / 2
 
     # Calculate parallax camera position (stars move slower)
-    # Camera on outer cylinder moves normally, but we sample stars at slower rate
     parallax_cam_x = (cam_x % world_width) * star_cylinder_ratio
 
-    # Draw stars with cylindrical wrapping (draw 3 panels for seamless wrapping)
+    # Pre-calculate visible world width to skip off-screen stars early
+    visible_half_width = (screen_width / ppm) / 2 + 20  # meters, with margin
+
+    # Draw stars with cylindrical wrapping
     for star_x_cylinder, star_y, brightness in stars:
-        # Draw star in 3 positions (left, center, right) on star cylinder
         for panel_offset in [-star_cylinder_width, 0, star_cylinder_width]:
             star_x_on_cylinder = star_x_cylinder + panel_offset
 
             # Calculate star's apparent position with parallax
-            # The star's position on screen is offset from camera by the parallax ratio
             star_offset_from_parallax_cam = star_x_on_cylinder - parallax_cam_x
             star_world_x = cam_x + (star_offset_from_parallax_cam / star_cylinder_ratio)
 
-            # Get terrain height at star's X position to check occlusion
-            terrain_height = get_terrain_height_at(star_world_x % world_width, terrain_points)
+            # Quick horizontal visibility check before expensive screen transform
+            if abs(star_world_x - cam_x) > visible_half_width:
+                continue
 
-            # Only draw star if it's above the terrain
-            if star_y > terrain_height:
-                screen_x, screen_y = world_to_screen((star_world_x, star_y))
+            # Transform to screen coordinates
+            screen_x = int((star_world_x - cam_x) * ppm + half_width)
+            screen_y = int(half_height - (star_y - cam_y) * ppm)
 
-                # Only draw if on screen
-                if -50 <= screen_x <= screen_width + 50 and -50 <= screen_y <= screen_height + 50:
-                    color = (brightness, brightness, brightness)
-                    pygame.draw.circle(surface, color, (screen_x, screen_y), 2)
+            # Only draw if on screen
+            if 0 <= screen_x < screen_width and 0 <= screen_y < screen_height:
+                surface.set_at((screen_x, screen_y), (brightness, brightness, brightness))

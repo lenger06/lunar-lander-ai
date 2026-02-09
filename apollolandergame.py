@@ -36,6 +36,7 @@ from apollolander import (
 )
 from apollo_hud import ApolloHUD
 from apollocsm import ApolloCSM
+from apollo_sky import ApolloSky, draw_sky_pygame
 
 # -------------------------------------------------
 # Config
@@ -201,6 +202,7 @@ def main():
     csm_fuel = 0.0
     descent_throttle = 0.0
     descent_gimbal_deg = 0.0
+    sky = None  # Star field with parallax
 
     # Start new game
     def new_game():
@@ -208,7 +210,7 @@ def main():
         nonlocal world, terrain_gen, terrain_body, terrain_pts, pads_info
         nonlocal lander, target_pad, target_pad_index, cam_x, cam_y, csm, csm_altitude
         nonlocal descent_fuel, ascent_fuel, csm_fuel, descent_throttle, descent_gimbal_deg
-        nonlocal csm_x, spawn_x, spawn_y, max_world_height
+        nonlocal csm_x, spawn_x, spawn_y, max_world_height, sky
 
         # Reset game state
         game_state.reset()
@@ -220,6 +222,9 @@ def main():
         difficulty = 2  # Medium difficulty
         terrain_gen = ApolloTerrain(world_width_meters=WORLD_WIDTH, difficulty=difficulty)
         terrain_body, terrain_pts, pads_info = terrain_gen.generate_terrain(world)
+
+        # Generate star field with parallax on inner cylinder (10% ratio = strong depth)
+        sky = ApolloSky(WORLD_WIDTH, ORBITAL_ALTITUDE_METERS, star_cylinder_ratio=0.1, num_stars=800)
 
         # Select random target pad
         target_pad_index = random.randint(0, len(pads_info) - 1)
@@ -1090,38 +1095,11 @@ def main():
         # ==========================================
         screen.fill((0, 0, 0))
 
-        # Draw stars (fixed in world space with cylindrical wrapping)
-        # Generate stars in world coordinates so they stay fixed as camera moves
-        import random as rnd
-        rnd.seed(42)  # Fixed seed for consistent star pattern
-
-        # Calculate visible world area
-        screen_half_w = SCREEN_WIDTH / 2 / PPM
-        screen_half_h = SCREEN_HEIGHT / 2 / PPM
-
-        # For cylindrical wrapping, we need to draw stars in a repeating pattern
-        # Draw stars for the current camera position and wrapped positions
-        cam_x_normalized = cam_x % WORLD_WIDTH
-
-        # Generate stars across one world width
-        for i in range(300):
-            # Star position in world coordinates (one panel)
-            star_base_x = (i * 73.7) % WORLD_WIDTH
-            star_world_y = (i * 97.3) % 120.0 - 10
-
-            # Draw this star in multiple panels (left, center, right of camera)
-            for panel_offset in [-WORLD_WIDTH, 0, WORLD_WIDTH]:
-                star_world_x = star_base_x + panel_offset
-
-                # Check if star is visible relative to camera
-                if abs(star_world_x - cam_x) < screen_half_w + 10:
-                    star_screen = world_to_screen(
-                        b2Vec2(star_world_x, star_world_y),
-                        cam_x, SCREEN_WIDTH, SCREEN_HEIGHT, cam_y
-                    )
-                    brightness = int(((i * 67) % 156) + 100)
-                    if 0 <= star_screen[0] < SCREEN_WIDTH and 0 <= star_screen[1] < SCREEN_HEIGHT:
-                        pygame.draw.circle(screen, (brightness, brightness, brightness), star_screen, 1)
+        # Draw stars with parallax effect (inner cylinder creates depth)
+        draw_sky_pygame(
+            screen, sky.get_stars(), sky.star_cylinder_ratio, sky.star_cylinder_width,
+            WORLD_WIDTH, terrain_pts, cam_x, cam_y, SCREEN_WIDTH, SCREEN_HEIGHT, PPM
+        )
 
         # Draw terrain with cylindrical wrapping
         screen_half_w = SCREEN_WIDTH / 2 / PPM
