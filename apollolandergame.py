@@ -1845,7 +1845,7 @@ def main():
         # Ascent and CSM still use single fuel gauges
         hud.draw_fuel_gauge(
             screen,
-            75,
+            120,
             160,
             ascent_fuel,
             MAX_ASCENT_FUEL,
@@ -1853,17 +1853,26 @@ def main():
         )
         hud.draw_fuel_gauge(
             screen,
-            115,
+            160,
             160,
             csm_fuel,
             MAX_CSM_FUEL,
             "CSM",
         )
 
+        # Range/alt rate gauge
+        alt = active_body.position.y
+        vel_y = active_body.linearVelocity.y
+        hud.draw_range_rate_gauge(screen, 210, 160, alt, vel_y)
+
+        # Horizontal velocity gauge
+        vel_x = active_body.linearVelocity.x
+        hud.draw_horizontal_velocity_gauge(screen, 320, 160, vel_x)
+
         # CG indicator and gimbal breakdown (only during descent phase)
         if not ascent_freed and game_state.playing:
-            hud.draw_cg_indicator(screen, cg_offset_x)
-            hud.draw_gimbal_breakdown(screen, descent_gimbal_deg, auto_gimbal_deg, manual_gimbal_deg)
+            hud.draw_cg_gimbal_indicator(screen, cg_offset_x, descent_gimbal_deg,
+                                          auto_gimbal_deg, manual_gimbal_deg)
 
         # Navigation (show target pad before landing, CSM after landing)
         # Moved to left side to avoid mini-map

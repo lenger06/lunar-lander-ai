@@ -1322,62 +1322,88 @@ def main():
         minimap_label = font_mini.render("MAP", True, (150, 150, 150))
         screen.blit(minimap_label, (minimap_x + 5, minimap_y + 3))
 
-        # Draw basic telemetry (top-left)
-        font_hud = pygame.font.SysFont("consolas", 18)
+        # === LUNAR CONTACT INDICATOR PANEL ===
+        # Draw contact light panel (like the physical indicator in Apollo LM)
+        contact_panel_x = 10
+        contact_panel_y = 10
+        panel_size = 80  # Smaller to fit HUD area
+        light_radius = 22
+
+        # Panel housing (gray square with rounded appearance)
+        panel_rect = pygame.Rect(contact_panel_x, contact_panel_y, panel_size, panel_size)
+
+        # Outer panel (dark gray housing)
+        pygame.draw.rect(screen, (80, 85, 90), panel_rect, border_radius=6)
+        # Inner panel border
+        pygame.draw.rect(screen, (60, 65, 70), panel_rect, 2, border_radius=6)
+
+        # Corner screws (4 corners)
+        screw_inset = 10
+        screw_radius = 5
+        screw_positions = [
+            (contact_panel_x + screw_inset, contact_panel_y + screw_inset),
+            (contact_panel_x + panel_size - screw_inset, contact_panel_y + screw_inset),
+            (contact_panel_x + screw_inset, contact_panel_y + panel_size - screw_inset),
+            (contact_panel_x + panel_size - screw_inset, contact_panel_y + panel_size - screw_inset),
+        ]
+        for sx, sy in screw_positions:
+            # Screw head
+            pygame.draw.circle(screen, (100, 105, 110), (sx, sy), screw_radius)
+            pygame.draw.circle(screen, (70, 75, 80), (sx, sy), screw_radius, 1)
+            # Screw slot (diagonal line)
+            pygame.draw.line(screen, (50, 55, 60),
+                           (sx - 3, sy - 3), (sx + 3, sy + 3), 2)
+
+        # "LUNAR CONTACT" label at top
+        font_label = pygame.font.SysFont("arial", 9, bold=True)
+        label_text = font_label.render("LUNAR CONTACT", True, (180, 185, 190))
+        label_rect = label_text.get_rect(center=(contact_panel_x + panel_size // 2, contact_panel_y + 14))
+        screen.blit(label_text, label_rect)
+
+        # Light housing (dark ring around the light)
+        light_center_x = contact_panel_x + panel_size // 2
+        light_center_y = contact_panel_y + panel_size // 2 + 5
+        pygame.draw.circle(screen, (30, 32, 35), (light_center_x, light_center_y), light_radius + 6)
+        pygame.draw.circle(screen, (50, 52, 55), (light_center_x, light_center_y), light_radius + 4)
+        pygame.draw.circle(screen, (70, 72, 75), (light_center_x, light_center_y), light_radius + 2)
+
+        # The light itself
+        if game_state.contact_light:
+            # ILLUMINATED - bright cyan/blue (no outer glow to stay within panel)
+            # Main light (gradient effect - brighter in center)
+            pygame.draw.circle(screen, (0, 180, 220), (light_center_x, light_center_y), light_radius)
+            pygame.draw.circle(screen, (0, 220, 255), (light_center_x, light_center_y), light_radius - 4)
+            pygame.draw.circle(screen, (100, 240, 255), (light_center_x, light_center_y), light_radius - 9)
+            pygame.draw.circle(screen, (200, 250, 255), (light_center_x, light_center_y), light_radius - 14)
+
+            # Highlight reflection
+            highlight_x = light_center_x - 6
+            highlight_y = light_center_y - 6
+            pygame.draw.circle(screen, (255, 255, 255), (highlight_x, highlight_y), 4)
+        else:
+            # OFF - dark/dim state
+            pygame.draw.circle(screen, (20, 40, 50), (light_center_x, light_center_y), light_radius)
+            pygame.draw.circle(screen, (25, 50, 60), (light_center_x, light_center_y), light_radius - 6)
+            # Subtle glass reflection even when off
+            pygame.draw.circle(screen, (40, 60, 70), (light_center_x - 5, light_center_y - 5), 3)
+
+        # Chrome ring around light
+        pygame.draw.circle(screen, (140, 145, 150), (light_center_x, light_center_y), light_radius + 1, 2)
+
+        # Draw alt/rate gauge (above horz vel gauge)
         if lander:
             alt = lander.ascent_stage.position.y
-            vel = lander.ascent_stage.linearVelocity
-            angle_deg = math.degrees(lander.ascent_stage.angle)
+            vel_y = lander.ascent_stage.linearVelocity.y
+            hud.draw_range_rate_gauge(screen, 10, SCREEN_HEIGHT - 715, alt, vel_y)
 
-            hud_x, hud_y = 10, 10
-            line_height = 25
+        # Draw horizontal velocity gauge (above throttle gauge)
+        if lander:
+            vel_x = lander.ascent_stage.linearVelocity.x
+            hud.draw_horizontal_velocity_gauge(screen, 10, SCREEN_HEIGHT - 540, vel_x)
 
-            # Altitude
-            alt_color = (100, 255, 100) if alt > 15.0 else (255, 165, 0) if alt > 5.0 else (255, 100, 100)
-            text = font_hud.render(f"ALT:  {alt:6.1f} m", True, alt_color)
-            screen.blit(text, (hud_x, hud_y))
-            hud_y += line_height
-
-            # Vertical speed
-            vv_color = (255, 255, 255) if vel.y > -2.0 else (255, 165, 0) if vel.y > -5.0 else (255, 100, 100)
-            text = font_hud.render(f"Vv:   {vel.y:+6.2f} m/s", True, vv_color)
-            screen.blit(text, (hud_x, hud_y))
-            hud_y += line_height
-
-            # Horizontal speed
-            text = font_hud.render(f"Vh:   {vel.x:+6.2f} m/s", True, (255, 255, 255))
-            screen.blit(text, (hud_x, hud_y))
-            hud_y += line_height
-
-            # Angle
-            angle_color = (100, 255, 100) if abs(angle_deg) < 20 else (255, 165, 0) if abs(angle_deg) < 45 else (255, 100, 100)
-            text = font_hud.render(f"ANG:  {angle_deg:+6.1f}°", True, angle_color)
-            screen.blit(text, (hud_x, hud_y))
-            hud_y += line_height
-
-            # Fuel percentage
-            fuel_pct = (descent_fuel / max_descent_fuel) * 100 if max_descent_fuel > 0 else 0
-            fuel_color = (100, 255, 100) if fuel_pct > 50 else (255, 165, 0) if fuel_pct > 25 else (255, 100, 100)
-            text = font_hud.render(f"FUEL: {fuel_pct:5.1f}%", True, fuel_color)
-            screen.blit(text, (hud_x, hud_y))
-            hud_y += line_height
-
-            # Throttle
-            text = font_hud.render(f"THR:  {descent_throttle*100:5.1f}%", True, (100, 200, 255))
-            screen.blit(text, (hud_x, hud_y))
-            hud_y += line_height
-
-            # Gimbal angle
-            gimbal_color = (255, 255, 100) if descent_gimbal_deg != 0 else (150, 150, 150)
-            text = font_hud.render(f"GMB:  {descent_gimbal_deg:+5.1f}°", True, gimbal_color)
-            screen.blit(text, (hud_x, hud_y))
-            hud_y += line_height
-
-            # Contact light indicator (like Apollo's "CONTACT LIGHT" callout)
-            if game_state.contact_light:
-                contact_color = (0, 255, 255)  # Bright cyan - very visible
-                text = font_hud.render("CONTACT", True, contact_color)
-                screen.blit(text, (hud_x, hud_y))
+        # Draw throttle gauge (above propellant gauges)
+        if lander:
+            hud.draw_throttle_gauge(screen, 10, SCREEN_HEIGHT - 485, descent_throttle)
 
         # Draw propellant gauges (separate fuel and oxidizer)
         if lander:
@@ -1386,95 +1412,192 @@ def main():
             max_fuel_display = MAX_DESCENT_FUEL_UNITS * fuel_mult
             max_oxidizer_display = MAX_DESCENT_OXIDIZER_UNITS * fuel_mult
             hud.draw_propellant_gauges(
-                screen, 10, SCREEN_HEIGHT - 280,
+                screen, 10, SCREEN_HEIGHT - 310,
                 descent_fuel_units, max_fuel_display,
                 descent_oxidizer_units, max_oxidizer_display,
-                width=25, height=120
             )
 
             # CG indicator and gimbal breakdown (below the gauges)
-            hud.draw_cg_indicator(screen, cg_offset_x, max_offset=0.5, x=10, y=SCREEN_HEIGHT - 100)
-            hud.draw_gimbal_breakdown(screen, descent_gimbal_deg, auto_gimbal_deg, manual_gimbal_deg,
-                                       x=10, y=SCREEN_HEIGHT - 70)
+            hud.draw_cg_gimbal_indicator(screen, cg_offset_x, descent_gimbal_deg,
+                                          auto_gimbal_deg, manual_gimbal_deg,
+                                          x=10, y=SCREEN_HEIGHT - 120)
 
-        # Draw attitude indicator (circular dial showing angle)
+        # Draw FDAI-style attitude indicator (8-ball style like Apollo)
         font_small = pygame.font.SysFont("consolas", 12)
         if lander:
-            att_center_x = 140
-            att_center_y = SCREEN_HEIGHT - 210  # Aligned with fuel gauges
-            att_radius = 50
+            fdai_center_x = 185
+            fdai_center_y = SCREEN_HEIGHT - 210
+            fdai_radius = 55  # Slightly larger for the FDAI
 
-            # Get current angle
-            current_angle_deg = math.degrees(lander.ascent_stage.angle)
-            current_angle_rad = lander.ascent_stage.angle
+            # Get current angle and angular velocity
+            current_angle_deg = math.degrees(lander.descent_stage.angle)
+            current_angle_rad = lander.descent_stage.angle
+            angular_vel = lander.descent_stage.angularVelocity  # rad/s
+            angular_vel_deg = math.degrees(angular_vel)  # deg/s
 
-            # Background circle
-            pygame.draw.circle(screen, (30, 30, 30), (att_center_x, att_center_y), att_radius, 0)
-            pygame.draw.circle(screen, (100, 100, 100), (att_center_x, att_center_y), att_radius, 2)
+            # === OCTAGONAL HOUSING ===
+            # Draw octagonal frame (like real FDAI)
+            oct_radius = fdai_radius + 8
+            octagon_points = []
+            for i in range(8):
+                angle = math.pi / 8 + i * math.pi / 4  # Start rotated 22.5 degrees
+                ox = fdai_center_x + oct_radius * math.cos(angle)
+                oy = fdai_center_y + oct_radius * math.sin(angle)
+                octagon_points.append((ox, oy))
+            pygame.draw.polygon(screen, (60, 60, 70), octagon_points, 0)  # Fill
+            pygame.draw.polygon(screen, (120, 120, 130), octagon_points, 2)  # Border
 
-            # Draw tick marks every 15 degrees
-            for tick_deg in range(-90, 91, 15):
-                tick_rad = math.radians(tick_deg)
-                inner_r = att_radius - 8 if tick_deg % 45 == 0 else att_radius - 5
-                outer_r = att_radius - 2
+            # === ATTITUDE BALL (clipped to circle) ===
+            # Create a surface for the ball that we'll clip
+            ball_surface = pygame.Surface((fdai_radius * 2, fdai_radius * 2), pygame.SRCALPHA)
+            ball_center = (fdai_radius, fdai_radius)
 
-                x1 = att_center_x + inner_r * math.sin(tick_rad)
-                y1 = att_center_y - inner_r * math.cos(tick_rad)
-                x2 = att_center_x + outer_r * math.sin(tick_rad)
-                y2 = att_center_y - outer_r * math.cos(tick_rad)
+            # Sky color (top half when level) and ground color (bottom half when level)
+            SKY_COLOR = (50, 80, 120)  # Dark blue sky
+            GROUND_COLOR = (100, 70, 50)  # Brown ground
 
-                tick_color = (255, 255, 255) if tick_deg == 0 else (150, 150, 150)
-                pygame.draw.line(screen, tick_color, (x1, y1), (x2, y2), 2 if tick_deg % 45 == 0 else 1)
+            # Draw rotating ball background
+            # Ball rotates with lander angle so horizon tilts opposite from pilot's perspective
+            ball_angle = current_angle_rad
 
-            # Draw horizon line (fixed)
-            horizon_len = att_radius - 15
-            pygame.draw.line(screen, (0, 150, 255),
-                           (att_center_x - horizon_len, att_center_y),
-                           (att_center_x + horizon_len, att_center_y), 2)
+            # Draw sky/ground split (rotating horizon)
+            # Create a larger rect and rotate it
+            horizon_offset = 0  # Could add pitch offset here for vertical movement
+            cos_a = math.cos(ball_angle)
+            sin_a = math.sin(ball_angle)
 
-            # Draw lander indicator (rotates with lander)
-            indicator_len = att_radius - 10
-            indicator_tip_x = att_center_x + indicator_len * math.sin(current_angle_rad)
-            indicator_tip_y = att_center_y - indicator_len * math.cos(current_angle_rad)
+            # Draw ground half (below horizon)
+            ground_points = []
+            for i in range(180):
+                a = math.radians(i) + ball_angle
+                px = ball_center[0] + fdai_radius * math.cos(a)
+                py = ball_center[1] + fdai_radius * math.sin(a)
+                ground_points.append((px, py))
+            if len(ground_points) >= 3:
+                pygame.draw.polygon(ball_surface, GROUND_COLOR, ground_points)
 
-            # Color based on angle
-            if abs(current_angle_deg) < 15:
-                indicator_color = (100, 255, 100)  # Green - safe
-            elif abs(current_angle_deg) < 30:
-                indicator_color = (255, 255, 0)    # Yellow - caution
-            elif abs(current_angle_deg) < 45:
-                indicator_color = (255, 165, 0)    # Orange - warning
-            else:
-                indicator_color = (255, 100, 100)  # Red - danger
+            # Draw sky half (above horizon)
+            sky_points = []
+            for i in range(180):
+                a = math.radians(i) + ball_angle + math.pi
+                px = ball_center[0] + fdai_radius * math.cos(a)
+                py = ball_center[1] + fdai_radius * math.sin(a)
+                sky_points.append((px, py))
+            if len(sky_points) >= 3:
+                pygame.draw.polygon(ball_surface, SKY_COLOR, sky_points)
 
-            # Draw lander body indicator (triangle)
-            pygame.draw.line(screen, indicator_color,
-                           (att_center_x, att_center_y),
-                           (indicator_tip_x, indicator_tip_y), 3)
+            # Draw horizon line on ball
+            horizon_len = fdai_radius - 5
+            h_x1 = ball_center[0] - horizon_len * cos_a
+            h_y1 = ball_center[1] - horizon_len * sin_a
+            h_x2 = ball_center[0] + horizon_len * cos_a
+            h_y2 = ball_center[1] + horizon_len * sin_a
+            pygame.draw.line(ball_surface, (255, 255, 255), (h_x1, h_y1), (h_x2, h_y2), 2)
 
-            # Draw small wings
-            wing_len = 15
-            wing_angle_offset = math.pi / 2  # 90 degrees
-            left_wing_x = att_center_x + wing_len * math.sin(current_angle_rad - wing_angle_offset)
-            left_wing_y = att_center_y - wing_len * math.cos(current_angle_rad - wing_angle_offset)
-            right_wing_x = att_center_x + wing_len * math.sin(current_angle_rad + wing_angle_offset)
-            right_wing_y = att_center_y - wing_len * math.cos(current_angle_rad + wing_angle_offset)
+            # Draw pitch ladder marks on the ball (rotate with horizon)
+            for pitch_offset in [-30, -20, -10, 10, 20, 30]:
+                # Calculate perpendicular offset from horizon
+                perp_x = -sin_a * pitch_offset * 0.8  # Scale factor for visual
+                perp_y = cos_a * pitch_offset * 0.8
+                # Short horizontal marks
+                mark_half_len = 8 if abs(pitch_offset) == 30 else 12
+                m_cx = ball_center[0] + perp_x
+                m_cy = ball_center[1] + perp_y
+                m_x1 = m_cx - mark_half_len * cos_a
+                m_y1 = m_cy - mark_half_len * sin_a
+                m_x2 = m_cx + mark_half_len * cos_a
+                m_y2 = m_cy + mark_half_len * sin_a
+                # Check if within ball radius
+                dist = math.sqrt(perp_x**2 + perp_y**2)
+                if dist < fdai_radius - 10:
+                    color = (200, 200, 200) if pitch_offset > 0 else (150, 150, 150)
+                    pygame.draw.line(ball_surface, color, (m_x1, m_y1), (m_x2, m_y2), 1)
 
-            pygame.draw.line(screen, indicator_color, (att_center_x, att_center_y), (left_wing_x, left_wing_y), 2)
-            pygame.draw.line(screen, indicator_color, (att_center_x, att_center_y), (right_wing_x, right_wing_y), 2)
+            # Draw circular border over ball to create clean edge (much faster than pixel masking)
+            # First blit the ball surface
+            screen.blit(ball_surface, (fdai_center_x - fdai_radius, fdai_center_y - fdai_radius))
 
+            # Then draw the octagon fill again around the ball edge to mask overflow
+            # Draw thick circle border to clean up edges
+            pygame.draw.circle(screen, (60, 60, 70), (fdai_center_x, fdai_center_y), fdai_radius + 3, 6)
+
+            # === FIXED SPACECRAFT SYMBOL (orange W-shape like real FDAI) ===
+            symbol_color = (255, 165, 0)  # Orange
             # Center dot
-            pygame.draw.circle(screen, indicator_color, (att_center_x, att_center_y), 4, 0)
+            pygame.draw.circle(screen, symbol_color, (fdai_center_x, fdai_center_y), 3, 0)
+            # Wings (horizontal lines)
+            wing_len = 20
+            pygame.draw.line(screen, symbol_color,
+                           (fdai_center_x - wing_len, fdai_center_y),
+                           (fdai_center_x - 8, fdai_center_y), 2)
+            pygame.draw.line(screen, symbol_color,
+                           (fdai_center_x + 8, fdai_center_y),
+                           (fdai_center_x + wing_len, fdai_center_y), 2)
+            # Down ticks at wing ends
+            pygame.draw.line(screen, symbol_color,
+                           (fdai_center_x - wing_len, fdai_center_y),
+                           (fdai_center_x - wing_len, fdai_center_y + 6), 2)
+            pygame.draw.line(screen, symbol_color,
+                           (fdai_center_x + wing_len, fdai_center_y),
+                           (fdai_center_x + wing_len, fdai_center_y + 6), 2)
 
-            # Angle readout below
-            font_att = pygame.font.SysFont("consolas", 14, bold=True)
-            angle_text = font_att.render(f"{current_angle_deg:+.1f}", True, indicator_color)
-            text_rect = angle_text.get_rect(center=(att_center_x, att_center_y + att_radius + 15))
-            screen.blit(angle_text, text_rect)
+            # === RATE INDICATOR (bottom - like YAW RATE on Apollo FDAI) ===
+            rate_bar_y = fdai_center_y + fdai_radius + 12
+            rate_bar_width = 80
+            rate_bar_height = 8
 
-            # Label
-            att_label = font_small.render("ATT", True, (255, 255, 255))
-            screen.blit(att_label, (att_center_x - 10, att_center_y - att_radius - 18))
+            # Background
+            pygame.draw.rect(screen, (40, 40, 50),
+                           (fdai_center_x - rate_bar_width // 2, rate_bar_y,
+                            rate_bar_width, rate_bar_height))
+
+            # Center mark
+            pygame.draw.line(screen, (150, 150, 150),
+                           (fdai_center_x, rate_bar_y - 2),
+                           (fdai_center_x, rate_bar_y + rate_bar_height + 2), 1)
+
+            # Rate needle (angular velocity indicator)
+            # Scale: ±20 deg/s maps to full width
+            max_rate = 20.0  # deg/s for full deflection
+            rate_normalized = max(-1, min(1, angular_vel_deg / max_rate))
+            needle_x = fdai_center_x + int(rate_normalized * (rate_bar_width // 2 - 4))
+
+            # Color based on rate
+            if abs(angular_vel_deg) < 5:
+                rate_color = (100, 255, 100)  # Green - stable
+            elif abs(angular_vel_deg) < 15:
+                rate_color = (255, 255, 0)    # Yellow - moderate
+            else:
+                rate_color = (255, 100, 100)  # Red - high rate
+
+            pygame.draw.rect(screen, rate_color,
+                           (needle_x - 2, rate_bar_y, 4, rate_bar_height))
+
+            # Rate label
+            rate_label = font_small.render("RATE", True, (180, 180, 180))
+            screen.blit(rate_label, (fdai_center_x - 14, rate_bar_y + rate_bar_height + 2))
+
+            # === ANGLE READOUT ===
+            font_att = pygame.font.SysFont("consolas", 12, bold=True)
+
+            # Color based on angle (for situational awareness)
+            if abs(current_angle_deg) < 15:
+                angle_color = (100, 255, 100)  # Green
+            elif abs(current_angle_deg) < 30:
+                angle_color = (255, 255, 0)    # Yellow
+            elif abs(current_angle_deg) < 45:
+                angle_color = (255, 165, 0)    # Orange
+            else:
+                angle_color = (255, 100, 100)  # Red
+
+            # Angle display (top)
+            angle_text = font_att.render(f"{current_angle_deg:+.1f}\u00b0", True, angle_color)
+            angle_rect = angle_text.get_rect(center=(fdai_center_x, fdai_center_y - fdai_radius - 12))
+            screen.blit(angle_text, angle_rect)
+
+            # Rate value (bottom right of rate bar)
+            rate_text = font_small.render(f"{angular_vel_deg:+.1f}\u00b0/s", True, rate_color)
+            screen.blit(rate_text, (fdai_center_x + rate_bar_width // 2 + 5, rate_bar_y - 2))
 
         # Draw AI status indicator
         if game_state.ai_enabled:
