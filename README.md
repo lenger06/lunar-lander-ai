@@ -622,6 +622,21 @@ A Sputnik-style satellite orbits across the sky as a background element:
 
 The satellite features a copper/gold spherical body with swept-back antennas that slowly rotate. It wraps around the cylindrical world and appears on the minimap as an orange dot.
 
+### Apollo LM Instrument Panel
+
+The HUD features realistic instrument gauges modeled after actual Apollo Lunar Module cockpit indicators, rendered with 3D metallic bezels, dark instrument faces, and needle/bar indicators.
+
+| Instrument | Style | Description |
+|------------|-------|-------------|
+| **Propellant Quantity** | Dual vertical columns | FUEL and OXID gauges with shared housing, 0–100% scale, green needle indicators (orange < 25%, red < 10%) |
+| **Range Alt / Alt Rate** | Dual vertical columns | Left column: altitude (0–500 m), Right column: vertical velocity (-30 to +30 m/s, center zero), numeric readouts at bottom |
+| **Horizontal Velocity** | Horizontal bar | Center-zero bar (-10 to +10 m/s), vertical needle slides left/right, color-coded by speed |
+| **Throttle** | Single vertical column | 0–100% scale with needle indicator, color shifts at high throttle |
+| **CG / Gimbal** | Dual horizontal bars | CG lateral offset (top) and gimbal angle (bottom) with auto (cyan) and trim (yellow) triangle markers |
+| **FDAI Attitude** | 8-ball style | Rotating horizon ball (brown ground / blue sky), fixed spacecraft symbol, roll rate bar |
+| **Lunar Contact** | Indicator light panel | Cyan light illuminates on probe contact, gray housing with corner screws |
+| **Quantity Warning** | Indicator light panel | Red light flashes at ~2 Hz when either fuel or oxidizer drops below 5% |
+
 ## Project Structure
 
 ```
@@ -642,7 +657,7 @@ lunar-lander-ai/
   apollolandergame.py          # Game (manual only)
   world.py                     # World/physics management (ApolloWorld, WorldObject base)
   apollo_terrain.py            # Procedural terrain generation (3 difficulty levels)
-  apollo_hud.py                # HUD display
+  apollo_hud.py                # HUD display (Apollo LM-style instrument gauges)
   apollo_sky.py                # Sky rendering (parallax starfield)
   satellite.py                 # Orbiting Sputnik-style satellite
   mini_map.py                  # Mini-map overlay

@@ -1390,6 +1390,68 @@ def main():
         # Chrome ring around light
         pygame.draw.circle(screen, (140, 145, 150), (light_center_x, light_center_y), light_radius + 1, 2)
 
+        # === PROPELLANT QUANTITY WARNING PANEL ===
+        qty_panel_x = 95
+        qty_panel_y = 10
+        qty_panel_size = 80
+        qty_light_radius = 22
+
+        # Panel housing
+        qty_rect = pygame.Rect(qty_panel_x, qty_panel_y, qty_panel_size, qty_panel_size)
+        pygame.draw.rect(screen, (80, 85, 90), qty_rect, border_radius=6)
+        pygame.draw.rect(screen, (60, 65, 70), qty_rect, 2, border_radius=6)
+
+        # Corner screws
+        qty_screw_inset = 10
+        qty_screw_positions = [
+            (qty_panel_x + qty_screw_inset, qty_panel_y + qty_screw_inset),
+            (qty_panel_x + qty_panel_size - qty_screw_inset, qty_panel_y + qty_screw_inset),
+            (qty_panel_x + qty_screw_inset, qty_panel_y + qty_panel_size - qty_screw_inset),
+            (qty_panel_x + qty_panel_size - qty_screw_inset, qty_panel_y + qty_panel_size - qty_screw_inset),
+        ]
+        for sx, sy in qty_screw_positions:
+            pygame.draw.circle(screen, (100, 105, 110), (sx, sy), 5)
+            pygame.draw.circle(screen, (70, 75, 80), (sx, sy), 5, 1)
+            pygame.draw.line(screen, (50, 55, 60), (sx - 3, sy - 3), (sx + 3, sy + 3), 2)
+
+        # "QUANTITY" label
+        qty_font_label = pygame.font.SysFont("arial", 9, bold=True)
+        qty_label_text = qty_font_label.render("QUANTITY", True, (180, 185, 190))
+        qty_label_rect = qty_label_text.get_rect(center=(qty_panel_x + qty_panel_size // 2, qty_panel_y + 14))
+        screen.blit(qty_label_text, qty_label_rect)
+
+        # Light housing (dark ring)
+        qty_light_cx = qty_panel_x + qty_panel_size // 2
+        qty_light_cy = qty_panel_y + qty_panel_size // 2 + 5
+        pygame.draw.circle(screen, (30, 32, 35), (qty_light_cx, qty_light_cy), qty_light_radius + 6)
+        pygame.draw.circle(screen, (50, 52, 55), (qty_light_cx, qty_light_cy), qty_light_radius + 4)
+        pygame.draw.circle(screen, (70, 72, 75), (qty_light_cx, qty_light_cy), qty_light_radius + 2)
+
+        # Determine if low fuel warning active (either propellant below 5%)
+        fuel_ratio = descent_fuel_units / MAX_DESCENT_FUEL_UNITS if MAX_DESCENT_FUEL_UNITS > 0 else 0
+        oxid_ratio = descent_oxidizer_units / MAX_DESCENT_OXIDIZER_UNITS if MAX_DESCENT_OXIDIZER_UNITS > 0 else 0
+        qty_warning = fuel_ratio <= 0.05 or oxid_ratio <= 0.05
+
+        # Flash at ~2 Hz (250ms on, 250ms off)
+        qty_flash_on = qty_warning and (pygame.time.get_ticks() % 500 < 250)
+
+        if qty_flash_on:
+            # ILLUMINATED - bright red
+            pygame.draw.circle(screen, (180, 0, 0), (qty_light_cx, qty_light_cy), qty_light_radius)
+            pygame.draw.circle(screen, (220, 0, 0), (qty_light_cx, qty_light_cy), qty_light_radius - 4)
+            pygame.draw.circle(screen, (255, 60, 60), (qty_light_cx, qty_light_cy), qty_light_radius - 9)
+            pygame.draw.circle(screen, (255, 150, 150), (qty_light_cx, qty_light_cy), qty_light_radius - 14)
+            # Highlight reflection
+            pygame.draw.circle(screen, (255, 255, 255), (qty_light_cx - 6, qty_light_cy - 6), 4)
+        else:
+            # OFF - dark/dim red tint
+            pygame.draw.circle(screen, (40, 15, 15), (qty_light_cx, qty_light_cy), qty_light_radius)
+            pygame.draw.circle(screen, (50, 20, 20), (qty_light_cx, qty_light_cy), qty_light_radius - 6)
+            pygame.draw.circle(screen, (60, 25, 25), (qty_light_cx - 5, qty_light_cy - 5), 3)
+
+        # Chrome ring
+        pygame.draw.circle(screen, (140, 145, 150), (qty_light_cx, qty_light_cy), qty_light_radius + 1, 2)
+
         # Draw alt/rate gauge (above horz vel gauge)
         if lander:
             alt = lander.ascent_stage.position.y
