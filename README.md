@@ -13,7 +13,7 @@ https://github.com/lenger06/lunar-lander-ai/raw/main/screenshots/landings3.mp4
 </p>
 
 <p align="center">
-  <img src="screenshots/LanderC.png" width="49%" alt="Manual descent">
+  <img src="screenshots/landerC.png" width="49%" alt="Manual descent">
   <img src="screenshots/LanderSputnik.png" width="49%" alt="Sputnik Satellite">
 </p>
 <p align="center">
