@@ -6,18 +6,26 @@ https://github.com/lenger06/lunar-lander-ai/raw/main/screenshots/landings3.mp4
 
 <p align="center">
   <img src="screenshots/Lander5.png" width="49%" alt="AI ensemble autopilot approaching landing pad">
-  <img src="screenshots/Lander2.png" width="49%" alt="Manual control approaching landing pad">
+  <img src="screenshots/LanderA.png" width="49%" alt="AI Autopilot Landing">
 </p>
 <p align="center">
-  <em>Left: AI ensemble autopilot (seeds 456, 123, 1111) with vote indicator &nbsp;|&nbsp; Right: Manual control mode</em>
+  <em>Left: AI ensemble autopilot (seeds 456, 123, 1111) with vote indicator &nbsp;|&nbsp; Right: AI Autopilot Landing</em>
 </p>
 
 <p align="center">
-  <img src="screenshots/Lander4.png" width="49%" alt="Manual descent at high altitude">
-  <img src="screenshots/Lander3.png" width="49%" alt="Crash in manual mode">
+  <img src="screenshots/LanderC.png" width="49%" alt="Manual descent">
+  <img src="screenshots/LanderSputnik.png" width="49%" alt="Sputnik Satellite">
 </p>
 <p align="center">
-  <em>Left: Manual descent at altitude &nbsp;|&nbsp; Right: The inevitable outcome of manual control</em>
+  <em>Left: Manual descent &nbsp;|&nbsp; Right: Sputnik Satellite</em>
+</p>
+
+<p align="center">
+  <img src="screenshots/LanderContactA.png" width="49%" alt="Surface Contact Indicator">
+  <img src="screenshots/LanderFuelLow.png" width="49%" alt="Fuel Low Indicator">
+</p>
+<p align="center">
+  <em>Left: Surface Contact Indicator &nbsp;|&nbsp; Right: Fuel Low Indicator</em>
 </p>
 
 ## Architecture
