@@ -5,7 +5,7 @@ A reinforcement learning system that trains Double DQN agents to land an Apollo-
 https://github.com/lenger06/lunar-lander-ai/raw/main/screenshots/landings3.mp4
 
 <p align="center">
-  <img src="screenshots/lander5.png" width="49%" alt="AI ensemble autopilot approaching landing pad">
+  <img src="screenshots/Lander5.png" width="49%" alt="AI ensemble autopilot approaching landing pad">
   <img src="screenshots/Lander2.png" width="49%" alt="Manual control approaching landing pad">
 </p>
 <p align="center">
