@@ -1322,174 +1322,186 @@ def main():
         minimap_label = font_mini.render("MAP", True, (150, 150, 150))
         screen.blit(minimap_label, (minimap_x + 5, minimap_y + 3))
 
-        # === LUNAR CONTACT INDICATOR PANEL ===
-        # Draw contact light panel (like the physical indicator in Apollo LM)
-        contact_panel_x = 10
-        contact_panel_y = 10
-        panel_size = 80  # Smaller to fit HUD area
+        # ============================================================
+        # APOLLO LM INSTRUMENT PANEL — Gray metal plates with screws
+        # ============================================================
+        # Panel layout constants (tightly packed vertical stack, left side)
+        PX = 5           # Panel left edge
+        PW = 172         # Panel width (main column)
+        INST_X = 10      # Instrument left margin within panels
+
+        # Panel Y positions (bottom-up, 2px seam gaps between panels)
+        P_CTRL_Y = 893                # Control panel (CG/Gimbal) — bottom
+        P_CTRL_H = 102
+        P_ENG_Y = P_CTRL_Y - 2 - 178 # Engine panel (Throttle + Propellant)
+        P_ENG_H = 178
+        P_FLT_Y = P_ENG_Y - 2 - 228  # Flight panel (Horz Vel + Alt/Rate)
+        P_FLT_H = 228
+        P_WARN_Y = P_FLT_Y - 2 - 90  # Warning lights panel (Contact + Quantity)
+        P_WARN_H = 90
+
+        # FDAI panel (to the right, overlaps with engine panel vertically)
+        P_FDAI_X = PX + PW + 2       # Right of main column with 2px seam
+        P_FDAI_W = 140
+        P_FDAI_Y = P_ENG_Y
+        P_FDAI_H = P_ENG_H  # Spans engine panel height (centered on propellant gauges)
+
+        # --- Draw panel plates (backgrounds first, then instruments on top) ---
+
+        # Warning lights panel
+        hud.draw_panel_plate(screen, PX, P_WARN_Y, PW, P_WARN_H, [
+            (PX + 8, P_WARN_Y + 8), (PX + PW - 8, P_WARN_Y + 8),
+            (PX + 8, P_WARN_Y + P_WARN_H - 8), (PX + PW - 8, P_WARN_Y + P_WARN_H - 8),
+        ])
+
+        # Flight instruments panel
+        hud.draw_panel_plate(screen, PX, P_FLT_Y, PW, P_FLT_H, [
+            (PX + 8, P_FLT_Y + 8), (PX + PW - 8, P_FLT_Y + 8),
+            (PX + 8, P_FLT_Y + P_FLT_H - 8), (PX + PW - 8, P_FLT_Y + P_FLT_H - 8),
+            (PX + PW // 2, P_FLT_Y + 8), (PX + PW // 2, P_FLT_Y + P_FLT_H - 8),
+        ])
+
+        # Engine panel
+        hud.draw_panel_plate(screen, PX, P_ENG_Y, PW, P_ENG_H, [
+            (PX + 8, P_ENG_Y + 8), (PX + PW - 8, P_ENG_Y + 8),
+            (PX + 8, P_ENG_Y + P_ENG_H - 8), (PX + PW - 8, P_ENG_Y + P_ENG_H - 8),
+            (PX + PW // 2, P_ENG_Y + 8), (PX + PW // 2, P_ENG_Y + P_ENG_H - 8),
+        ])
+
+        # Control panel
+        hud.draw_panel_plate(screen, PX, P_CTRL_Y, PW, P_CTRL_H, [
+            (PX + 8, P_CTRL_Y + 8), (PX + PW - 8, P_CTRL_Y + 8),
+            (PX + 8, P_CTRL_Y + P_CTRL_H - 8), (PX + PW - 8, P_CTRL_Y + P_CTRL_H - 8),
+        ])
+
+        # FDAI mounting plate (right of engine panel)
+        hud.draw_panel_plate(screen, P_FDAI_X, P_FDAI_Y, P_FDAI_W, P_FDAI_H, [
+            (P_FDAI_X + 8, P_FDAI_Y + 8), (P_FDAI_X + P_FDAI_W - 8, P_FDAI_Y + 8),
+            (P_FDAI_X + 8, P_FDAI_Y + P_FDAI_H - 8),
+            (P_FDAI_X + P_FDAI_W - 8, P_FDAI_Y + P_FDAI_H - 8),
+            (P_FDAI_X + P_FDAI_W // 2, P_FDAI_Y + 8),
+            (P_FDAI_X + P_FDAI_W // 2, P_FDAI_Y + P_FDAI_H - 8),
+        ])
+
+        # Blank panel below FDAI (fills space below attitude indicator)
+        hud.draw_panel_plate(screen, P_FDAI_X, P_CTRL_Y, P_FDAI_W, P_CTRL_H, [
+            (P_FDAI_X + 8, P_CTRL_Y + 8), (P_FDAI_X + P_FDAI_W - 8, P_CTRL_Y + 8),
+            (P_FDAI_X + 8, P_CTRL_Y + P_CTRL_H - 8),
+            (P_FDAI_X + P_FDAI_W - 8, P_CTRL_Y + P_CTRL_H - 8),
+        ])
+
+        # --- Panel seams (thin dark lines between adjacent panels) ---
+        hud.draw_panel_seam(screen, PX, P_FLT_Y - 1, PX + PW, P_FLT_Y - 1)
+        hud.draw_panel_seam(screen, PX, P_ENG_Y - 1, PX + PW + 2 + P_FDAI_W, P_ENG_Y - 1)
+        hud.draw_panel_seam(screen, PX, P_CTRL_Y - 1, PX + PW + 2 + P_FDAI_W, P_CTRL_Y - 1)
+        # Vertical seam between main column and right panels
+        hud.draw_panel_seam(screen, PX + PW + 1, P_FDAI_Y, PX + PW + 1, P_CTRL_Y + P_CTRL_H)
+
+        # ============================================================
+        # INSTRUMENTS — drawn on top of panel plates
+        # ============================================================
+
+        # === WARNING LIGHTS (on warning panel) ===
+        # Instrument positions within warning panel
+        contact_x = INST_X
+        contact_y = P_WARN_Y + 5
+        qty_x = INST_X + 85
+        qty_y = P_WARN_Y + 5
+        light_size = 80
         light_radius = 22
 
-        # Panel housing (gray square with rounded appearance)
-        panel_rect = pygame.Rect(contact_panel_x, contact_panel_y, panel_size, panel_size)
-
-        # Outer panel (dark gray housing)
-        pygame.draw.rect(screen, (80, 85, 90), panel_rect, border_radius=6)
-        # Inner panel border
-        pygame.draw.rect(screen, (60, 65, 70), panel_rect, 2, border_radius=6)
-
-        # Corner screws (4 corners)
-        screw_inset = 10
-        screw_radius = 5
-        screw_positions = [
-            (contact_panel_x + screw_inset, contact_panel_y + screw_inset),
-            (contact_panel_x + panel_size - screw_inset, contact_panel_y + screw_inset),
-            (contact_panel_x + screw_inset, contact_panel_y + panel_size - screw_inset),
-            (contact_panel_x + panel_size - screw_inset, contact_panel_y + panel_size - screw_inset),
-        ]
-        for sx, sy in screw_positions:
-            # Screw head
-            pygame.draw.circle(screen, (100, 105, 110), (sx, sy), screw_radius)
-            pygame.draw.circle(screen, (70, 75, 80), (sx, sy), screw_radius, 1)
-            # Screw slot (diagonal line)
-            pygame.draw.line(screen, (50, 55, 60),
-                           (sx - 3, sy - 3), (sx + 3, sy + 3), 2)
-
-        # "LUNAR CONTACT" label at top
+        # --- LUNAR CONTACT light ---
+        pygame.draw.rect(screen, (80, 85, 90),
+                         (contact_x, contact_y, light_size, light_size), 0, 6)
+        pygame.draw.rect(screen, (60, 65, 70),
+                         (contact_x, contact_y, light_size, light_size), 2, 6)
         font_label = pygame.font.SysFont("arial", 9, bold=True)
-        label_text = font_label.render("LUNAR CONTACT", True, (180, 185, 190))
-        label_rect = label_text.get_rect(center=(contact_panel_x + panel_size // 2, contact_panel_y + 14))
-        screen.blit(label_text, label_rect)
-
-        # Light housing (dark ring around the light)
-        light_center_x = contact_panel_x + panel_size // 2
-        light_center_y = contact_panel_y + panel_size // 2 + 5
-        pygame.draw.circle(screen, (30, 32, 35), (light_center_x, light_center_y), light_radius + 6)
-        pygame.draw.circle(screen, (50, 52, 55), (light_center_x, light_center_y), light_radius + 4)
-        pygame.draw.circle(screen, (70, 72, 75), (light_center_x, light_center_y), light_radius + 2)
-
-        # The light itself
+        lbl = font_label.render("LUNAR CONTACT", True, (180, 185, 190))
+        screen.blit(lbl, lbl.get_rect(center=(contact_x + light_size // 2, contact_y + 14)))
+        lc_cx = contact_x + light_size // 2
+        lc_cy = contact_y + light_size // 2 + 5
+        pygame.draw.circle(screen, (30, 32, 35), (lc_cx, lc_cy), light_radius + 6)
+        pygame.draw.circle(screen, (50, 52, 55), (lc_cx, lc_cy), light_radius + 4)
+        pygame.draw.circle(screen, (70, 72, 75), (lc_cx, lc_cy), light_radius + 2)
         if game_state.contact_light:
-            # ILLUMINATED - bright cyan/blue (no outer glow to stay within panel)
-            # Main light (gradient effect - brighter in center)
-            pygame.draw.circle(screen, (0, 180, 220), (light_center_x, light_center_y), light_radius)
-            pygame.draw.circle(screen, (0, 220, 255), (light_center_x, light_center_y), light_radius - 4)
-            pygame.draw.circle(screen, (100, 240, 255), (light_center_x, light_center_y), light_radius - 9)
-            pygame.draw.circle(screen, (200, 250, 255), (light_center_x, light_center_y), light_radius - 14)
-
-            # Highlight reflection
-            highlight_x = light_center_x - 6
-            highlight_y = light_center_y - 6
-            pygame.draw.circle(screen, (255, 255, 255), (highlight_x, highlight_y), 4)
+            pygame.draw.circle(screen, (0, 180, 220), (lc_cx, lc_cy), light_radius)
+            pygame.draw.circle(screen, (0, 220, 255), (lc_cx, lc_cy), light_radius - 4)
+            pygame.draw.circle(screen, (100, 240, 255), (lc_cx, lc_cy), light_radius - 9)
+            pygame.draw.circle(screen, (200, 250, 255), (lc_cx, lc_cy), light_radius - 14)
+            pygame.draw.circle(screen, (255, 255, 255), (lc_cx - 6, lc_cy - 6), 4)
         else:
-            # OFF - dark/dim state
-            pygame.draw.circle(screen, (20, 40, 50), (light_center_x, light_center_y), light_radius)
-            pygame.draw.circle(screen, (25, 50, 60), (light_center_x, light_center_y), light_radius - 6)
-            # Subtle glass reflection even when off
-            pygame.draw.circle(screen, (40, 60, 70), (light_center_x - 5, light_center_y - 5), 3)
+            pygame.draw.circle(screen, (20, 40, 50), (lc_cx, lc_cy), light_radius)
+            pygame.draw.circle(screen, (25, 50, 60), (lc_cx, lc_cy), light_radius - 6)
+            pygame.draw.circle(screen, (40, 60, 70), (lc_cx - 5, lc_cy - 5), 3)
+        pygame.draw.circle(screen, (140, 145, 150), (lc_cx, lc_cy), light_radius + 1, 2)
 
-        # Chrome ring around light
-        pygame.draw.circle(screen, (140, 145, 150), (light_center_x, light_center_y), light_radius + 1, 2)
-
-        # === PROPELLANT QUANTITY WARNING PANEL ===
-        qty_panel_x = 95
-        qty_panel_y = 10
-        qty_panel_size = 80
-        qty_light_radius = 22
-
-        # Panel housing
-        qty_rect = pygame.Rect(qty_panel_x, qty_panel_y, qty_panel_size, qty_panel_size)
-        pygame.draw.rect(screen, (80, 85, 90), qty_rect, border_radius=6)
-        pygame.draw.rect(screen, (60, 65, 70), qty_rect, 2, border_radius=6)
-
-        # Corner screws
-        qty_screw_inset = 10
-        qty_screw_positions = [
-            (qty_panel_x + qty_screw_inset, qty_panel_y + qty_screw_inset),
-            (qty_panel_x + qty_panel_size - qty_screw_inset, qty_panel_y + qty_screw_inset),
-            (qty_panel_x + qty_screw_inset, qty_panel_y + qty_panel_size - qty_screw_inset),
-            (qty_panel_x + qty_panel_size - qty_screw_inset, qty_panel_y + qty_panel_size - qty_screw_inset),
-        ]
-        for sx, sy in qty_screw_positions:
-            pygame.draw.circle(screen, (100, 105, 110), (sx, sy), 5)
-            pygame.draw.circle(screen, (70, 75, 80), (sx, sy), 5, 1)
-            pygame.draw.line(screen, (50, 55, 60), (sx - 3, sy - 3), (sx + 3, sy + 3), 2)
-
-        # "QUANTITY" label
-        qty_font_label = pygame.font.SysFont("arial", 9, bold=True)
-        qty_label_text = qty_font_label.render("QUANTITY", True, (180, 185, 190))
-        qty_label_rect = qty_label_text.get_rect(center=(qty_panel_x + qty_panel_size // 2, qty_panel_y + 14))
-        screen.blit(qty_label_text, qty_label_rect)
-
-        # Light housing (dark ring)
-        qty_light_cx = qty_panel_x + qty_panel_size // 2
-        qty_light_cy = qty_panel_y + qty_panel_size // 2 + 5
-        pygame.draw.circle(screen, (30, 32, 35), (qty_light_cx, qty_light_cy), qty_light_radius + 6)
-        pygame.draw.circle(screen, (50, 52, 55), (qty_light_cx, qty_light_cy), qty_light_radius + 4)
-        pygame.draw.circle(screen, (70, 72, 75), (qty_light_cx, qty_light_cy), qty_light_radius + 2)
-
-        # Determine if low fuel warning active (either propellant below 5%)
+        # --- QUANTITY warning light ---
+        pygame.draw.rect(screen, (80, 85, 90),
+                         (qty_x, qty_y, light_size, light_size), 0, 6)
+        pygame.draw.rect(screen, (60, 65, 70),
+                         (qty_x, qty_y, light_size, light_size), 2, 6)
+        qlbl = font_label.render("QUANTITY", True, (180, 185, 190))
+        screen.blit(qlbl, qlbl.get_rect(center=(qty_x + light_size // 2, qty_y + 14)))
+        qc_cx = qty_x + light_size // 2
+        qc_cy = qty_y + light_size // 2 + 5
+        pygame.draw.circle(screen, (30, 32, 35), (qc_cx, qc_cy), light_radius + 6)
+        pygame.draw.circle(screen, (50, 52, 55), (qc_cx, qc_cy), light_radius + 4)
+        pygame.draw.circle(screen, (70, 72, 75), (qc_cx, qc_cy), light_radius + 2)
         fuel_ratio = descent_fuel_units / MAX_DESCENT_FUEL_UNITS if MAX_DESCENT_FUEL_UNITS > 0 else 0
         oxid_ratio = descent_oxidizer_units / MAX_DESCENT_OXIDIZER_UNITS if MAX_DESCENT_OXIDIZER_UNITS > 0 else 0
         qty_warning = fuel_ratio <= 0.05 or oxid_ratio <= 0.05
-
-        # Flash at ~2 Hz (250ms on, 250ms off)
         qty_flash_on = qty_warning and (pygame.time.get_ticks() % 500 < 250)
-
         if qty_flash_on:
-            # ILLUMINATED - bright red
-            pygame.draw.circle(screen, (180, 0, 0), (qty_light_cx, qty_light_cy), qty_light_radius)
-            pygame.draw.circle(screen, (220, 0, 0), (qty_light_cx, qty_light_cy), qty_light_radius - 4)
-            pygame.draw.circle(screen, (255, 60, 60), (qty_light_cx, qty_light_cy), qty_light_radius - 9)
-            pygame.draw.circle(screen, (255, 150, 150), (qty_light_cx, qty_light_cy), qty_light_radius - 14)
-            # Highlight reflection
-            pygame.draw.circle(screen, (255, 255, 255), (qty_light_cx - 6, qty_light_cy - 6), 4)
+            pygame.draw.circle(screen, (180, 0, 0), (qc_cx, qc_cy), light_radius)
+            pygame.draw.circle(screen, (220, 0, 0), (qc_cx, qc_cy), light_radius - 4)
+            pygame.draw.circle(screen, (255, 60, 60), (qc_cx, qc_cy), light_radius - 9)
+            pygame.draw.circle(screen, (255, 150, 150), (qc_cx, qc_cy), light_radius - 14)
+            pygame.draw.circle(screen, (255, 255, 255), (qc_cx - 6, qc_cy - 6), 4)
         else:
-            # OFF - dark/dim red tint
-            pygame.draw.circle(screen, (40, 15, 15), (qty_light_cx, qty_light_cy), qty_light_radius)
-            pygame.draw.circle(screen, (50, 20, 20), (qty_light_cx, qty_light_cy), qty_light_radius - 6)
-            pygame.draw.circle(screen, (60, 25, 25), (qty_light_cx - 5, qty_light_cy - 5), 3)
+            pygame.draw.circle(screen, (40, 15, 15), (qc_cx, qc_cy), light_radius)
+            pygame.draw.circle(screen, (50, 20, 20), (qc_cx, qc_cy), light_radius - 6)
+            pygame.draw.circle(screen, (60, 25, 25), (qc_cx - 5, qc_cy - 5), 3)
+        pygame.draw.circle(screen, (140, 145, 150), (qc_cx, qc_cy), light_radius + 1, 2)
 
-        # Chrome ring
-        pygame.draw.circle(screen, (140, 145, 150), (qty_light_cx, qty_light_cy), qty_light_radius + 1, 2)
-
-        # Draw alt/rate gauge (above horz vel gauge)
+        # === FLIGHT INSTRUMENTS (on flight panel) ===
         if lander:
+            # Alt/Rate gauge (top of flight panel)
             alt = lander.ascent_stage.position.y
             vel_y = lander.ascent_stage.linearVelocity.y
-            hud.draw_range_rate_gauge(screen, 10, SCREEN_HEIGHT - 715, alt, vel_y)
+            hud.draw_range_rate_gauge(screen, INST_X, P_FLT_Y + 5, alt, vel_y)
 
-        # Draw horizontal velocity gauge (above throttle gauge)
-        if lander:
+            # Horizontal velocity gauge (below alt/rate)
             vel_x = lander.ascent_stage.linearVelocity.x
-            hud.draw_horizontal_velocity_gauge(screen, 10, SCREEN_HEIGHT - 540, vel_x)
+            hud.draw_horizontal_velocity_gauge(screen, INST_X, P_FLT_Y + 178, vel_x)
 
-        # Draw throttle gauge (above propellant gauges)
+        # === ENGINE INSTRUMENTS (on engine panel) ===
         if lander:
-            hud.draw_throttle_gauge(screen, 10, SCREEN_HEIGHT - 485, descent_throttle)
+            # Throttle gauge (left side)
+            hud.draw_throttle_gauge(screen, INST_X, P_ENG_Y + 4, descent_throttle)
 
-        # Draw propellant gauges (separate fuel and oxidizer)
-        if lander:
-            # Calculate max values for gauge display (4x scaled)
+            # Propellant gauges (right of throttle)
             fuel_mult = 4.0
             max_fuel_display = MAX_DESCENT_FUEL_UNITS * fuel_mult
             max_oxidizer_display = MAX_DESCENT_OXIDIZER_UNITS * fuel_mult
             hud.draw_propellant_gauges(
-                screen, 10, SCREEN_HEIGHT - 310,
+                screen, INST_X + 55, P_ENG_Y + 4,
                 descent_fuel_units, max_fuel_display,
                 descent_oxidizer_units, max_oxidizer_display,
             )
 
-            # CG indicator and gimbal breakdown (below the gauges)
+        # === CONTROL INSTRUMENTS (on control panel) ===
+        if lander:
             hud.draw_cg_gimbal_indicator(screen, cg_offset_x, descent_gimbal_deg,
                                           auto_gimbal_deg, manual_gimbal_deg,
-                                          x=10, y=SCREEN_HEIGHT - 120)
+                                          x=INST_X, y=P_CTRL_Y + 5,
+                                          width=160, height=92)
 
-        # Draw FDAI-style attitude indicator (8-ball style like Apollo)
+        # Draw FDAI-style attitude indicator (on FDAI mounting plate)
         font_small = pygame.font.SysFont("consolas", 12)
         if lander:
-            fdai_center_x = 185
-            fdai_center_y = SCREEN_HEIGHT - 210
-            fdai_radius = 55  # Slightly larger for the FDAI
+            fdai_center_x = P_FDAI_X + P_FDAI_W // 2
+            fdai_center_y = P_FDAI_Y + P_FDAI_H // 2
+            fdai_radius = 55
 
             # Get current angle and angular velocity
             current_angle_deg = math.degrees(lander.descent_stage.angle)
@@ -1660,6 +1672,19 @@ def main():
             # Rate value (bottom right of rate bar)
             rate_text = font_small.render(f"{angular_vel_deg:+.1f}\u00b0/s", True, rate_color)
             screen.blit(rate_text, (fdai_center_x + rate_bar_width // 2 + 5, rate_bar_y - 2))
+
+        # === ZIGZAG PERIMETER TRIM (castellated edges around panel assembly) ===
+        PANEL_RIGHT = PX + PW + 2 + P_FDAI_W  # Right edge of full assembly
+        # Top of panel assembly
+        hud.draw_panel_zigzag(screen, 'top', PX, P_WARN_Y, PW)
+        # Right edge of narrow section (warning + flight panels)
+        hud.draw_panel_zigzag(screen, 'right', PX + PW, P_WARN_Y,
+                              P_ENG_Y - P_WARN_Y)
+        # Step top (where panels widen for FDAI column)
+        hud.draw_panel_zigzag(screen, 'top', PX + PW, P_ENG_Y, 2 + P_FDAI_W)
+        # Right edge of wide section (FDAI + blank panels)
+        hud.draw_panel_zigzag(screen, 'right', PANEL_RIGHT, P_ENG_Y,
+                              P_CTRL_Y + P_CTRL_H - P_ENG_Y)
 
         # Draw AI status indicator
         if game_state.ai_enabled:

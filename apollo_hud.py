@@ -35,6 +35,106 @@ class ApolloHUD:
         self.color_gray = (150, 150, 150)
         self.color_cyan = (100, 255, 255)
 
+    def draw_panel_plate(self, surface, x, y, width, height, screws=None):
+        """
+        Draw a gray metal instrument panel plate with Phillips-head screws.
+
+        Args:
+            surface: Pygame surface
+            x, y: Top-left position
+            width, height: Panel dimensions
+            screws: List of (sx, sy) tuples for screw positions, or None for auto corners
+        """
+        # Panel body (warm medium gray like Apollo LM panels)
+        pygame.draw.rect(surface, (130, 135, 140), (x, y, width, height), 0, 2)
+        # Top/left highlight edge (3D bevel)
+        pygame.draw.line(surface, (160, 165, 170),
+                         (x + 2, y + 1), (x + width - 3, y + 1))
+        pygame.draw.line(surface, (160, 165, 170),
+                         (x + 1, y + 2), (x + 1, y + height - 3))
+        # Bottom/right shadow edge
+        pygame.draw.line(surface, (90, 95, 100),
+                         (x + 2, y + height - 2), (x + width - 2, y + height - 2))
+        pygame.draw.line(surface, (90, 95, 100),
+                         (x + width - 2, y + 2), (x + width - 2, y + height - 2))
+        # Outer border
+        pygame.draw.rect(surface, (65, 70, 75), (x, y, width, height), 1, 2)
+
+        # Default screws at corners if none specified
+        if screws is None:
+            inset = 8
+            screws = [
+                (x + inset, y + inset),
+                (x + width - inset, y + inset),
+                (x + inset, y + height - inset),
+                (x + width - inset, y + height - inset),
+            ]
+
+        for sx, sy in screws:
+            # Screw head
+            pygame.draw.circle(surface, (160, 165, 170), (sx, sy), 4)
+            pygame.draw.circle(surface, (100, 105, 110), (sx, sy), 4, 1)
+            # Phillips cross
+            pygame.draw.line(surface, (80, 85, 90),
+                             (sx - 2, sy), (sx + 2, sy), 1)
+            pygame.draw.line(surface, (80, 85, 90),
+                             (sx, sy - 2), (sx, sy + 2), 1)
+
+    def draw_panel_seam(self, surface, x1, y1, x2, y2):
+        """Draw a thin dark seam line between adjacent panels."""
+        pygame.draw.line(surface, (50, 55, 60), (x1, y1), (x2, y2), 1)
+
+    def draw_panel_zigzag(self, surface, edge, start_x, start_y, length,
+                          notch_size=8, notch_depth=5):
+        """
+        Draw castellated/zigzag trim along a panel perimeter edge.
+        Cuts rectangular notches into the panel edge to create
+        the distinctive Apollo LM panel contour.
+
+        Args:
+            surface: Pygame surface
+            edge: 'top', 'right', 'bottom', 'left' - which edge the notches cut into
+            start_x, start_y: Starting corner of the edge
+            length: Edge length in pixels
+            notch_size: Width/height of each tooth
+            notch_depth: How deep notches cut into the panel
+        """
+        dark = (20, 22, 25)
+        shadow = (40, 42, 46)
+        for i in range(length // notch_size):
+            if i % 2 == 1:
+                offset = i * notch_size
+                if edge == 'top':
+                    nx = start_x + offset
+                    pygame.draw.rect(surface, dark,
+                                     (nx, start_y, notch_size, notch_depth))
+                    pygame.draw.line(surface, shadow,
+                                     (nx, start_y + notch_depth),
+                                     (nx + notch_size - 1, start_y + notch_depth))
+                elif edge == 'right':
+                    ny = start_y + offset
+                    pygame.draw.rect(surface, dark,
+                                     (start_x - notch_depth, ny,
+                                      notch_depth, notch_size))
+                    pygame.draw.line(surface, shadow,
+                                     (start_x - notch_depth, ny),
+                                     (start_x - notch_depth, ny + notch_size - 1))
+                elif edge == 'bottom':
+                    nx = start_x + offset
+                    pygame.draw.rect(surface, dark,
+                                     (nx, start_y - notch_depth,
+                                      notch_size, notch_depth))
+                    pygame.draw.line(surface, shadow,
+                                     (nx, start_y - notch_depth),
+                                     (nx + notch_size - 1, start_y - notch_depth))
+                elif edge == 'left':
+                    ny = start_y + offset
+                    pygame.draw.rect(surface, dark,
+                                     (start_x, ny, notch_depth, notch_size))
+                    pygame.draw.line(surface, shadow,
+                                     (start_x + notch_depth, ny),
+                                     (start_x + notch_depth, ny + notch_size - 1))
+
     def draw_telemetry(self, surface, lander_body, ground_y, mode="DESCENT"):
         """
         Draw telemetry panel (top-left).
