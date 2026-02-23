@@ -10,6 +10,7 @@ A 3-screen scrolling lunar lander game with:
 - Camera scrolling to follow the lander
 """
 
+import json
 import math
 import os
 import pygame
@@ -106,8 +107,9 @@ PLANET_PROPERTIES = {
 # Parse command-line arguments
 SELECTED_PLANET = "luna"
 TERRAIN_DIFFICULTY = 1
-ENSEMBLE_SEEDS = None  # None = single agent mode, list of 3 = ensemble mode
+ENSEMBLE_SEEDS = None  # None = single agent mode, list of odd N >= 3 = ensemble mode
 AUTO_EPISODES = 0  # 0 = normal interactive mode, >0 = auto-restart for N episodes
+CRASH_LOG_DIR = "crash_logs"
 argv = sys.argv[1:]
 i = 0
 while i < len(argv):
@@ -122,22 +124,23 @@ while i < len(argv):
         except ValueError:
             print(f"Invalid difficulty '{arg}'. Using default: 1")
     elif lower_arg == "--models":
-        # Consume next 3 args as seed numbers (first = master/tie-breaker)
+        # Consume subsequent integer args as seed numbers (first = master/tie-breaker)
         seeds = []
-        for j in range(1, 4):
-            if i + j < len(argv):
-                try:
-                    seeds.append(int(argv[i + j]))
-                except ValueError:
-                    print(f"Invalid seed '{argv[i + j]}'. --models requires 3 integer seeds.")
-                    seeds = []
-                    break
-        if len(seeds) == 3:
+        j = 1
+        while i + j < len(argv):
+            try:
+                seeds.append(int(argv[i + j]))
+                j += 1
+            except ValueError:
+                break
+        if len(seeds) >= 3 and len(seeds) % 2 == 1:
             ENSEMBLE_SEEDS = seeds
-            print(f"Ensemble mode: seeds {seeds} (master: {seeds[0]})")
+            print(f"Ensemble mode: {len(seeds)} agents, seeds {seeds} (master: {seeds[0]})")
         else:
-            print("Usage: --models SEED1 SEED2 SEED3 (first seed = master/tie-breaker)")
-        i += 3  # skip the 3 seed args
+            print(f"Usage: --models SEED1 SEED2 SEED3 [SEED4 SEED5 ...] (odd number >= 3, first seed = master/tie-breaker)")
+            if len(seeds) >= 2 and len(seeds) % 2 == 0:
+                print(f"  Got {len(seeds)} seeds — ensemble requires an odd number for majority voting")
+        i += len(seeds)  # skip the seed args
     elif lower_arg.startswith("--episodes="):
         try:
             AUTO_EPISODES = int(lower_arg.split("=")[1])
@@ -151,7 +154,7 @@ while i < len(argv):
         for planet in PLANET_PROPERTIES.keys():
             print(f"  - {planet}")
         print(f"Difficulty: --difficulty=1|2|3")
-        print(f"Ensemble: --models SEED1 SEED2 SEED3")
+        print(f"Ensemble: --models SEED1 SEED2 SEED3 [SEED4 SEED5 ...]")
         print(f"Auto-run: --episodes=N")
         print(f"Using defaults: {SELECTED_PLANET}, difficulty {TERRAIN_DIFFICULTY}")
     i += 1
@@ -223,7 +226,7 @@ class GameState:
         self.ai_agent = None
         self.ai_action_size = 5
         self.ai_ensemble = None  # List of (agent, action_size) tuples, or None
-        self.ai_vote_agreement = ""  # "3/3", "2/3", "1/3*"
+        self.ai_vote_agreement = ""  # "N/N" unanimous, "M/N" majority, "M/N*" master decides
 
         # AI angle tracking (continuous, matches training env)
         self.ai_prev_raw_angle = 0.0
@@ -281,14 +284,14 @@ def get_ai_action(agent, state):
         return 0
 
 def load_ensemble(seeds, save_dir='models'):
-    """Load 3 AI agents for ensemble voting. First seed is master/tie-breaker."""
+    """Load AI agents for ensemble voting. First seed is master/tie-breaker."""
     if not AI_AVAILABLE:
         return None
     agents = []
     for seed in seeds:
         model_path, action_size = find_model(seed, save_dir)
         if model_path is None or not os.path.exists(model_path):
-            print(f"[!] No model found for seed {seed} — ensemble requires all 3 models")
+            print(f"[!] No model found for seed {seed} — ensemble requires all {len(seeds)} models")
             return None
         try:
             agent = DoubleDQNAgent(state_size=9, action_size=action_size, seed=seed)
@@ -303,7 +306,8 @@ def load_ensemble(seeds, save_dir='models'):
 
 
 def get_ensemble_action(agents, state):
-    """Get action via majority vote from 3 agents. Agent[0] is tie-breaker."""
+    """Get action via majority vote from N agents. Agent[0] is tie-breaker."""
+    n = len(agents)
     actions = []
     for agent, _ in agents:
         try:
@@ -315,14 +319,14 @@ def get_ensemble_action(agents, state):
 
     counts = Counter(actions)
     winner, top_count = counts.most_common(1)[0]
+    majority = n // 2 + 1
 
-    if top_count >= 2:
-        # Majority (2 or 3 agree)
-        agreement = "3/3" if top_count == 3 else "2/3"
+    if top_count >= majority:
+        agreement = f"{top_count}/{n}"
         return winner, agreement
     else:
-        # All 3 different — master (agent[0]) decides
-        return actions[0], "1/3*"
+        # No majority — master (agent[0]) decides
+        return actions[0], f"{counts[actions[0]]}/{n}*"
 
 
 def lander_state_to_gym_state(lander, target_x, target_y, descent_throttle, game_state):
@@ -455,6 +459,79 @@ def _print_summary(results, ensemble_seeds):
         print(f"  Gentle (1-2 m/s):  {gentle} ({100.0 * gentle / len(landed):.1f}%)")
         print(f"  Hard (>2 m/s):     {hard} ({100.0 * hard / len(landed):.1f}%)")
     print("=" * 70)
+
+
+def _dump_crash_log(episode_num, ensemble_seeds, initial_conditions, flight_data,
+                    lander, terrain_pts, target_pad, descent_fuel, max_descent_fuel):
+    """Save detailed crash diagnostics to a JSON file."""
+    os.makedirs(CRASH_LOG_DIR, exist_ok=True)
+
+    pos = lander.descent_stage.position
+    vel = lander.descent_stage.linearVelocity
+    angle_deg = math.degrees(lander.descent_stage.angle)
+    speed = math.sqrt(vel.x**2 + vel.y**2)
+    terrain_h = get_terrain_height_at(pos.x, terrain_pts)
+    altitude = pos.y - terrain_h
+
+    # Determine crash reason
+    crash_reasons = []
+    if abs(angle_deg) > 30:
+        crash_reasons.append(f"angle={angle_deg:+.1f}° (threshold: ±30°)")
+    if abs(vel.y) > 3.0 or abs(vel.x) > 3.0:
+        crash_reasons.append(f"high_speed: vel_x={vel.x:.2f}, vel_y={vel.y:.2f} (threshold: ±3.0 m/s)")
+    if 20 <= abs(angle_deg) <= 30 and not is_point_on_pad(pos.x, pos.y, target_pad, tolerance_x=2.5, tolerance_y=3.0):
+        crash_reasons.append(f"off_target_bad_angle={angle_deg:+.1f}° (20-30° range, not on pad)")
+    if not crash_reasons:
+        crash_reasons.append("unknown (review thresholds)")
+
+    # Terrain profile around pad (±50m)
+    pad_cx = (target_pad["x1"] + target_pad["x2"]) / 2.0
+    terrain_profile = []
+    for pt_x, pt_y in terrain_pts:
+        if pad_cx - 50 <= pt_x <= pad_cx + 50:
+            terrain_profile.append({"x": round(pt_x, 2), "y": round(pt_y, 2)})
+
+    final_state = {
+        "pos_x": round(pos.x, 3),
+        "pos_y": round(pos.y, 3),
+        "vel_x": round(vel.x, 3),
+        "vel_y": round(vel.y, 3),
+        "speed": round(speed, 3),
+        "angle_deg": round(angle_deg, 2),
+        "angular_vel": round(lander.descent_stage.angularVelocity, 4),
+        "altitude": round(altitude, 3),
+        "terrain_height": round(terrain_h, 3),
+        "fuel_pct": round((descent_fuel / max_descent_fuel) * 100, 1) if max_descent_fuel > 0 else 0,
+        "crash_reasons": crash_reasons,
+    }
+
+    log_data = {
+        "episode": episode_num,
+        "ensemble_seeds": ensemble_seeds,
+        "initial_conditions": initial_conditions,
+        "terrain_profile_around_pad": terrain_profile,
+        "target_pad": {
+            "x1": target_pad["x1"],
+            "x2": target_pad["x2"],
+            "y": target_pad["y"],
+            "width": abs(target_pad["x2"] - target_pad["x1"]),
+            "center_x": pad_cx,
+        },
+        "total_steps": len(flight_data),
+        "final_state": final_state,
+        "flight_data": flight_data,
+    }
+
+    if ensemble_seeds:
+        seeds_str = "_".join(str(s) for s in ensemble_seeds)
+        filename = f"crash_ep{episode_num:04d}_ensemble_{seeds_str}.json"
+    else:
+        filename = f"crash_ep{episode_num:04d}_single.json"
+
+    filepath = os.path.join(CRASH_LOG_DIR, filename)
+    with open(filepath, "w") as f:
+        json.dump(log_data, f, indent=2)
+    print(f"  >> Crash log saved: {filepath}")
 
 
 # -------------------------------------------------
@@ -694,11 +771,31 @@ def main():
     episode_logged = False  # prevents double-logging same episode
     episode_results = []  # list of dicts for summary
     auto_restart_delay = 0  # frames to wait before auto-restart
+    episode_flight_data = []  # per-step flight recorder (dumped on crash only)
+    episode_initial_conditions = {}  # captured at episode start
+    crash_log_count = 0  # number of crash logs saved
+
+    def _capture_initial_conditions():
+        """Snapshot initial conditions for crash diagnostics."""
+        return {
+            "spawn_x": round(spawn_x, 3),
+            "spawn_y": round(spawn_y, 3),
+            "initial_vel_x": round(lander.descent_stage.linearVelocity.x, 3),
+            "initial_vel_y": round(lander.descent_stage.linearVelocity.y, 3),
+            "initial_angle_deg": round(math.degrees(lander.descent_stage.angle), 2),
+            "initial_angular_vel": round(lander.descent_stage.angularVelocity, 4),
+            "target_pad_x1": target_pad["x1"],
+            "target_pad_x2": target_pad["x2"],
+            "target_pad_y": target_pad["y"],
+            "target_pad_index": target_pad_index,
+            "terrain_difficulty": TERRAIN_DIFFICULTY,
+        }
 
     # Auto-enable AI in auto-run mode
     if AUTO_EPISODES > 0 and game_state.ai_agent is not None:
         game_state.ai_enabled = True
         episode_num = 1
+        episode_initial_conditions = _capture_initial_conditions()
         print(f"\n--- Auto-run: Episode {episode_num}/{AUTO_EPISODES} ---")
 
     # Main game loop
@@ -711,6 +808,12 @@ def main():
         if AUTO_EPISODES > 0 and (game_state.crashed or game_state.landed):
             if not episode_logged:
                 episode_logged = True
+                # Dump crash diagnostics before logging
+                if game_state.crashed:
+                    _dump_crash_log(episode_num, ENSEMBLE_SEEDS, episode_initial_conditions,
+                                    episode_flight_data, lander, terrain_pts, target_pad,
+                                    descent_fuel, max_descent_fuel)
+                    crash_log_count += 1
                 result = _log_episode(episode_num, AUTO_EPISODES, game_state, lander,
                                       descent_fuel, max_descent_fuel, target_pad,
                                       episode_step, is_point_on_pad)
@@ -723,11 +826,15 @@ def main():
                 episode_num += 1
                 if episode_num > AUTO_EPISODES:
                     _print_summary(episode_results, ENSEMBLE_SEEDS)
+                    if crash_log_count > 0:
+                        print(f"\nCrash logs saved: {crash_log_count} files in {CRASH_LOG_DIR}/")
                     running = False
                     continue
                 new_game()
                 episode_step = 0
                 episode_logged = False
+                episode_flight_data = []
+                episode_initial_conditions = _capture_initial_conditions()
                 game_state.ai_enabled = True
                 print(f"\n--- Auto-run: Episode {episode_num}/{AUTO_EPISODES} ---")
 
@@ -814,6 +921,29 @@ def main():
             else:
                 action = get_ai_action(game_state.ai_agent, state)
                 game_state.ai_vote_agreement = ""
+
+            # Flight recorder: capture step data (only in auto-run mode)
+            if AUTO_EPISODES > 0:
+                _pos = lander.descent_stage.position
+                _vel = lander.descent_stage.linearVelocity
+                _th = get_terrain_height_at(_pos.x, terrain_pts)
+                _pad_cx = (target_pad["x1"] + target_pad["x2"]) / 2.0
+                episode_flight_data.append({
+                    "step": episode_step,
+                    "pos_x": round(_pos.x, 3),
+                    "pos_y": round(_pos.y, 3),
+                    "vel_x": round(_vel.x, 3),
+                    "vel_y": round(_vel.y, 3),
+                    "angle_deg": round(math.degrees(lander.descent_stage.angle), 2),
+                    "angular_vel": round(lander.descent_stage.angularVelocity, 4),
+                    "throttle": round(descent_throttle, 3),
+                    "altitude": round(_pos.y - _th, 3),
+                    "terrain_height": round(_th, 3),
+                    "fuel_pct": round((descent_fuel / max_descent_fuel) * 100, 1) if max_descent_fuel > 0 else 0,
+                    "action": int(action),
+                    "vote": game_state.ai_vote_agreement,
+                    "dist_to_pad": round(_pos.x - _pad_cx, 3),
+                })
 
             # Engine is ALWAYS ON at current throttle (matches training env)
             main_thrust = True
@@ -1696,12 +1826,13 @@ def main():
                 # Vote agreement indicator
                 font_ai_sub = pygame.font.Font(None, 24)
                 vote = game_state.ai_vote_agreement
-                if vote == "3/3":
+                n_agents = len(ENSEMBLE_SEEDS)
+                if vote == f"{n_agents}/{n_agents}":
                     vote_color = (0, 255, 0)  # green = unanimous
-                elif vote == "2/3":
-                    vote_color = (255, 255, 0)  # yellow = majority
+                elif vote.endswith("*"):
+                    vote_color = (255, 100, 100)  # red = no majority (master decides)
                 else:
-                    vote_color = (255, 100, 100)  # red = split (master decides)
+                    vote_color = (255, 255, 0)  # yellow = majority
                 vote_text = font_ai_sub.render(f"Vote: {vote} | Master: seed {ENSEMBLE_SEEDS[0]}", True, vote_color)
                 screen.blit(vote_text, (SCREEN_WIDTH // 2 - 150, 38))
             else:

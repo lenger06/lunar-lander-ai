@@ -1,6 +1,6 @@
 # Apollo Lunar Lander AI
 
-A reinforcement learning system that trains Double DQN agents to land an Apollo-style lunar module on target landing pads. Agents are trained using a 3-stage curriculum with spring-based potential reward shaping, then deployed in a playable pygame game as either a single AI autopilot or a **triple ensemble with majority voting**.
+A reinforcement learning system that trains Double DQN agents to land an Apollo-style lunar module on target landing pads. Agents are trained using a 3-stage curriculum with spring-based potential reward shaping, then deployed in a playable pygame game as either a single AI autopilot or a **variable-size ensemble with majority voting**.
 
 https://github.com/lenger06/lunar-lander-ai/raw/main/screenshots/landings3.mp4
 
@@ -9,7 +9,7 @@ https://github.com/lenger06/lunar-lander-ai/raw/main/screenshots/landings3.mp4
   <img src="screenshots/LanderA.png" width="49%" alt="AI Autopilot Landing">
 </p>
 <p align="center">
-  <em>Left: AI ensemble autopilot (seeds 456, 123, 1111) with vote indicator &nbsp;|&nbsp; Right: AI Autopilot Landing</em>
+  <em>Left: AI ensemble autopilot with vote indicator &nbsp;|&nbsp; Right: AI Autopilot Landing</em>
 </p>
 
 <p align="center">
@@ -38,45 +38,62 @@ Each agent is a **Double Deep Q-Network (Double DQN)** with experience replay:
 - Soft target network updates (tau=1e-3), gradient clipping at 1.0
 - Epsilon-greedy exploration with per-stage decay schedules
 
-Multiple agents are trained independently with different random seeds, then the best 3 are combined into an ensemble for inference.
+Multiple agents are trained independently with different random seeds, then the best are combined into an ensemble for inference.
 
-### Triple Ensemble Voting
+### Ensemble Majority Voting
 
-The ensemble system loads 3 independently trained agents and selects actions via majority vote:
+The ensemble system loads an odd number (3, 5, 7, ...) of independently trained agents and selects actions via majority vote:
 
-- **Unanimous (3/3):** All 3 agents agree → use that action
-- **Majority (2/3):** 2 agents agree → use the majority action
-- **Split (1/3):** All 3 disagree → the **master agent** (first seed specified) decides
+- **Unanimous (N/N):** All agents agree → use that action
+- **Majority (M/N):** A majority agrees → use the majority action
+- **No majority (M/N\*):** No majority exists → the **master agent** (first seed specified) decides
 
-The first model specified on the command line is the master/tie-breaker. This provides NASA-style triple redundancy — the system is robust against any single agent making a bad decision.
+The first model specified on the command line is the master/tie-breaker. Seeds can be repeated to give a model extra voting weight (e.g., listing seed 456 twice gives it 2 out of 5 votes). This provides NASA-style redundancy — the system is robust against any single agent making a bad decision.
 
-### Ensemble Performance (Seeds 456, 123, 1111)
+### Recommended Ensemble: Seeds 456, 3333, 3141, 456, 1337
 
-Evaluation over 100 episodes:
+A 5-agent ensemble with seed 456 doubled as master for approach precision anchoring.
+
+```bash
+python apollolandergame_with_ai.py --models 456 3333 3141 456 1337 --episodes=100
+```
+
+#### Performance (5,000 episodes)
 
 | Metric | Result |
 |--------|--------|
-| **Landing rate** | 99% (99/100) |
-| **On-target landings** | 97% |
-| **Crash rate** | 1% |
+| **Landing rate** | **99.5%** (4,975 / 5,000) |
+| **On-target landings** | **99.3%** (4,963 / 5,000) |
+| **Crash rate** | 0.5% (25 / 5,000) |
 
 #### Landing Quality
 
 | Metric | Average | Max |
 |--------|---------|-----|
-| Landing speed | 0.55 m/s | 1.24 m/s |
-| Landing angle | 6.9° | 18.4° |
-| Distance from target | 1.72 m | 17.44 m |
-| Fuel remaining | 70.0% | — |
-| Steps to land | 1,784 | 2,923 |
+| Landing speed | 0.04 m/s | 1.27 m/s |
+| Landing angle | 0.2° | 14.2° |
+| Distance from target | 1.26 m | 20.72 m |
+| Fuel remaining | 65.5% | — |
+| Steps to land | 1,956 | 3,679 |
 
 #### Landing Breakdown
 
 | Category | Count | Percentage |
 |----------|-------|------------|
-| Soft (<1 m/s) | 57 | 57.6% |
-| Gentle (1–2 m/s) | 42 | 42.4% |
+| Soft (<1 m/s) | 4,949 | 99.5% |
+| Gentle (1–2 m/s) | 26 | 0.5% |
 | Hard (>2 m/s) | 0 | 0.0% |
+
+#### Ensemble Design Rationale
+
+| Seed | Role | S2 Final (Approach) | S3 Final (Landing) | S3 Best |
+|------|------|--------------------|--------------------|---------|
+| 456 (×2) | Master + approach anchor | 98% | 92% | 100% |
+| 3333 | Best overall finisher | 96% | 100% | 100% |
+| 3141 | Strong S3 + diverse S2 | 86% | 96% | 100% |
+| 1337 | Strong all-round | 97% | 94% | 100% |
+
+Doubling seed 456 gives it 2 of 5 votes, anchoring approach decisions with its top-tier S2 accuracy (98%). Seeds 3333 and 3141 provide the strongest landing stability (S3 Final 100% and 96%), while 1337 adds strong all-round performance. The combination of approach precision and landing stability yields near-perfect on-target soft landings.
 
 ### State Space (9 dimensions)
 
@@ -514,18 +531,33 @@ python evaluate_stage3.py --seed 456 --episodes 10 --visualize
 
 **Reports:** Landing rate, on-target rate, crash rate, average speed/angle/steps/fuel, landing quality breakdown (soft/gentle/hard).
 
-### Evaluation Results
+### Trained Model Results
 
-100 episodes per seed, eps=0.0 (headless evaluation via `evaluate_stage3.py`):
+All models trained with game-identical Box2D physics (solver iterations 10,10) using the 3-stage lateral RCS curriculum. Sorted by S3 Best, then S3 Final.
 
-| Seed | Landing | On-Target | Crashed | Avg Speed | Soft (<1 m/s) | Avg Dist | Avg Steps |
-|------|---------|-----------|---------|-----------|---------------|----------|-----------|
-| **456** | **99%** | **99%** | 1% | 1.06 m/s | **35%** | **1.22m** | — |
-| **123** | **99%** | **98%** | 1% | 1.27 m/s | 25% | 4.67m | 1172 |
-| **1111** | 95% | 89% | 3% | 1.61 m/s | 4% | 3.82m | — |
-| **2222** | 91% | 78% | 0% | 1.25 m/s | 22% | 5.74m | 1227 |
-| **999** | 86% | 77% | 12% | 1.63 m/s | 16% | 5.73m | 1148 |
-| **3333** | 98% | 16% | 2% | 1.06 m/s | 20% | 14.01m | 1180 |
+| Seed | S1 Final | S1 Best | S2 Final | S2 Best | S3 Final | S3 Best | S3 Eps | Time (min) | Notes |
+|------|----------|---------|----------|---------|----------|---------|--------|------------|-------|
+| 3333 | 100% | 100% | 96% | 98% | **100%** | **100%** | 1500 | 365 | Best individual training metrics |
+| 3141 | 100% | 100% | 86% | 91% | **96%** | **100%** | 1334 | 291 | Recommended ensemble member |
+| 1111 | 100% | 100% | 92% | 95% | **95%** | **100%** | 1500 | 336 | |
+| 1337 | 100% | 100% | 97% | 100% | **94%** | **100%** | 1334 | 295 | Recommended ensemble member |
+| 2222 | 100% | 100% | 84% | 94% | **94%** | **99%** | 1500 | 306 | |
+| 8888 | 99% | 99% | 78% | 96% | **93%** | **100%** | 1334 | 341 | |
+| 2468 | 100% | 100% | 92% | 93% | **93%** | **99%** | 1334 | 275 | |
+| 456  | 100% | 100% | 98% | 98% | **92%** | **100%** | 1500 | 335 | Recommended ensemble member (×2) |
+| 42   | 100% | 100% | 94% | 95% | **89%** | **100%** | 1500 | 306 | |
+| 789  | 100% | 100% | 96% | 96% | **87%** | **98%** | 1500 | 334 | |
+| 7654 | 100% | 100% | 97% | 97% | **85%** | **100%** | 1334 | 256 | Fastest training |
+| 5555 | 100% | 100% | 88% | 88% | **83%** | **99%** | 1500 | 333 | |
+| 4242 | 99% | 99% | 91% | 93% | **72%** | **91%** | 1334 | 305 | |
+| 123  | 100% | 100% | 99% | 99% | **68%** | **100%** | 1500 | 318 | Highest S3 instability |
+| 999  | 100% | 100% | 78% | 86% | — | — | — | 227 | 2-stage curriculum only (no S3) |
+
+**Key observations:**
+- **S3 Best vs S3 Final gap** indicates late-training instability — seeds with smaller gaps (3333, 3141, 1111) are more stable
+- **S2 Final** correlates with on-target landing precision in ensemble evaluation
+- Batch 1 seeds (42–5555) trained with 1500 S3 episodes; Batch 2 seeds (1337–7654) trained with 1334 S3 episodes
+- Seed 3333 is the only model to achieve 100% on both S3 Final and S3 Best
 
 ## Playing the Game
 
@@ -539,21 +571,25 @@ python apollolandergame_with_ai.py [planet]
 
 ### Ensemble Mode
 
-Run with triple ensemble voting (first seed = master/tie-breaker):
+Run with ensemble voting (first seed = master/tie-breaker, odd number of seeds >= 3):
 
 ```bash
-python apollolandergame_with_ai.py [planet] --models 456 123 1111
+# Recommended 5-agent ensemble
+python apollolandergame_with_ai.py [planet] --models 456 3333 3141 456 1337
+
+# 3-agent ensemble
+python apollolandergame_with_ai.py [planet] --models 456 3141 1337
 ```
 
-The HUD displays real-time vote agreement: green (3/3 unanimous), yellow (2/3 majority), or red (1/3 split — master decides).
+Seeds can be repeated to give a model extra voting weight. The HUD displays real-time vote agreement: green (unanimous), yellow (majority), or red (no majority — master decides).
 
 ### Auto-Run Evaluation
 
 Run N episodes automatically with logging and a summary report:
 
 ```bash
-# Ensemble evaluation — 100 episodes
-python apollolandergame_with_ai.py luna --models 456 123 1111 --episodes=100
+# Recommended ensemble evaluation — 100 episodes
+python apollolandergame_with_ai.py luna --models 456 3333 3141 456 1337 --episodes=100
 
 # Single agent evaluation — 50 episodes
 python apollolandergame_with_ai.py luna --episodes=50
@@ -561,12 +597,14 @@ python apollolandergame_with_ai.py luna --episodes=50
 
 Each episode logs status (ON-TARGET / OFF-TARGET / CRASHED), speed, angle, distance to pad, fuel remaining, and step count. After all episodes, a full summary report is printed.
 
+When a crash occurs during auto-run evaluation, detailed diagnostic data is automatically saved to `crash_logs/` including full step-by-step flight recorder data, initial conditions, terrain profile around the pad, and crash reason analysis.
+
 ### Game Options
 
 | Flag | Description |
 |------|-------------|
 | `[planet]` | Planet name (default: `luna`) |
-| `--models S1 S2 S3` | Enable ensemble with 3 seeds (first = master) |
+| `--models S1 S2 S3 [S4 S5 ...]` | Enable ensemble with odd N >= 3 seeds (first = master) |
 | `--episodes=N` | Auto-run N episodes with AI, log results |
 | `--difficulty=1\|2\|3` | Terrain difficulty (1=easy/6 pads, 2=medium/4 pads, 3=hard/2 pads) |
 
@@ -680,8 +718,9 @@ lunar-lander-ai/
   apollo_service_module.py     # Service module (SPS engine, gimbal, RCS)
   apollo_csm_module.py         # CSM WorldObject wrapper
 
-  # Models & Config
+  # Models, Config & Logs
   models/                      # Saved .pth model weights and summary JSON files
+  crash_logs/                  # Per-crash diagnostic JSON (auto-generated during eval)
   requirements.txt             # Python dependencies
 ```
 
