@@ -1,0 +1,38 @@
+{
+  "seed": 999,
+  "total_time_minutes": 50.60380479892095,
+  "results": [
+    {
+      "stage": 1,
+      "seed": 999,
+      "episodes": 200,
+      "final_success_rate": 99.0,
+      "best_success_rate": 99.0,
+      "train_time": 126.7589499950409
+    },
+    {
+      "stage": 2,
+      "seed": 999,
+      "episodes": 200,
+      "final_success_rate": 97.0,
+      "best_success_rate": 97.0,
+      "train_time": 210.96635055541992
+    },
+    {
+      "stage": 3,
+      "seed": 999,
+      "episodes": 300,
+      "final_success_rate": 68.0,
+      "best_success_rate": 69.0,
+      "train_time": 990.8492805957794
+    },
+    {
+      "stage": 4,
+      "seed": 999,
+      "episodes": 500,
+      "final_success_rate": 59.0,
+      "best_success_rate": 77.0,
+      "train_time": 1705.4226672649384
+    }
+  ]
+}
