@@ -424,7 +424,7 @@ def main():
         spawn_x = csm_dock_world_x - lander_dock_offset  # Position lander so its dock port touches CSM's
         spawn_y = csm_y  # Same altitude as CSM
 
-        lander = ApolloLander(world, position=b2Vec2(spawn_x, spawn_y), scale=0.5625)  # Reduced by 25% from 0.75
+        lander = ApolloLander(world, position=b2Vec2(spawn_x, spawn_y), scale=0.5625, gravity=PLANET["gravity"])  # Reduced by 25% from 0.75
 
         # Rotate lander 90° clockwise to be horizontal (pointing right, docking port toward CSM on left)
         lander.descent_stage.angle = -math.pi / 2.0  # -90° (clockwise)

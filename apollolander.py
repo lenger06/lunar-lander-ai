@@ -69,6 +69,7 @@ class ApolloLander:
         leg_density: float = 0.4,
         friction: float = 0.9,
         restitution: float = 0.1,
+        gravity: float = 1.62,
     ):
         self.world = world
         self.scale = scale
@@ -76,7 +77,7 @@ class ApolloLander:
         self.descent_stage = self._create_descent_stage(
             world, position, scale,
             descent_density, leg_density,
-            friction, restitution,
+            friction, restitution, gravity,
         )
 
         # Place ascent stage so hull touches descent module
@@ -125,7 +126,7 @@ class ApolloLander:
             )
 
     def _create_descent_stage(
-        self, world, position, s, body_density, leg_density, friction, restitution
+        self, world, position, s, body_density, leg_density, friction, restitution, gravity=1.62
     ):
         """Create descent stage with legs and engine bell."""
         body = world.CreateDynamicBody(
@@ -242,10 +243,11 @@ class ApolloLander:
             )
             data["foot_bars"].append((foot, bar_half_w, bar_half_h))
 
-            # Contact probe - extends 1.7m below foot pad (like real Apollo)
-            # Real probes were 67 inches (1.7m) to detect surface before touchdown
-            # Store attachment point (local coords) and length - probe hangs straight down
-            probe_length = 1.7 * s
+            # Contact probe - extends below foot pad (like real Apollo 67-inch probes)
+            # Length is scaled by lunar gravity ratio so post-cutoff free-fall acceleration
+            # is gravity-normalized: shorter probes on high-g bodies prevent over-speed at touchdown.
+            # Capped at 0.3*s minimum so probes remain visible and functional on very high-g worlds.
+            probe_length = max(1.7 * s * (1.62 / gravity), 0.3 * s)
             probe_attach = b2Vec2(foot.x, foot.y - bar_half_h)  # Bottom of foot pad
             data["contact_probes"].append((probe_attach, probe_length, side))
 

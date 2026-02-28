@@ -772,7 +772,7 @@ def main():
         spawn_y = SPAWN_ALTITUDE
         max_world_height = SPAWN_ALTITUDE * 1.5
 
-        lander = ApolloLander(world, position=b2Vec2(spawn_x, spawn_y), scale=0.75)
+        lander = ApolloLander(world, position=b2Vec2(spawn_x, spawn_y), scale=0.75, gravity=PLANET["gravity"])
 
         # Apply atmospheric damping to both stages (Luna has no atmosphere, so 0.0)
         lander.descent_stage.linearDamping = LINEAR_DAMPING
