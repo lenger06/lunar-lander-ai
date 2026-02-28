@@ -2,7 +2,7 @@
 
 A reinforcement learning system that trains Double DQN agents to land an Apollo-style lunar module on target landing pads. Agents are trained using a 3-stage curriculum with spring-based potential reward shaping, then deployed in a playable pygame game in manual flight mode or as either a single AI autopilot or a **variable-size ensemble with majority voting**.
 
-https://github.com/lenger06/lunar-lander-ai/raw/main/screenshots/Screen%20Recording%202026-02-27%20203651.mp4
+https://github.com/lenger06/lunar-lander-ai/raw/main/screenshots/LanderVideo.mp4
 
 <p align="center">
   <em>AI autopilot controlled flight and landings — 7-model ensemble (456, 3333, 7777, 456, 1337, 9012, 6789)</em>
