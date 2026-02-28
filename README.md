@@ -24,6 +24,13 @@ https://github.com/lenger06/lunar-lander-ai/raw/main/screenshots/LanderVideo.mp4
   <em>Left: Near surface contact &nbsp;|&nbsp; Right: Surface contact and automatic engine cut-off</em>
 </p>
 
+<p align="center">
+  <img src="screenshots/Screenshot 2026-02-28 110006.png" width="75%" alt="QUANTITY warning light and CONTACT light both illuminated — low fuel at touchdown">
+</p>
+<p align="center">
+  <em>QUANTITY warning light (red) and CONTACT light (cyan) both illuminated — propellant below 5% at touchdown</em>
+</p>
+
 ## Architecture
 
 ### Double DQN Agent
