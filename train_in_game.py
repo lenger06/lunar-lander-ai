@@ -28,7 +28,7 @@ import time
 
 from Box2D import b2World, b2Vec2, b2ContactListener
 
-from apollolander import ApolloLander, PPM, MASS_SCALE
+from apollolander import ApolloLander, PPM, MASS_SCALE, check_contact_probes
 from apollo_terrain import ApolloTerrain, get_terrain_height_at, is_point_on_pad
 from spring_rewards import SpringRewardComputer
 from double_dqn_agent import DoubleDQNAgent
@@ -53,10 +53,10 @@ TIME_STEP = 1.0 / 60.0
 # Engine/RCS parameters (matching apollo_lander_env.py)
 DESCENT_THRUST_FACTOR = abs(GRAVITY) * 2.71
 RCS_THRUST = 15.0 * 445.0 / MASS_SCALE  # 66.75 force units
-FUEL_MAX = 328.0
+FUEL_MAX = 250.0
 FUEL_MAIN_RATE = 0.12   # per step * throttle
 FUEL_RCS_RATE = 0.02    # per RCS firing
-THROTTLE_INIT = 0.4
+THROTTLE_INIT = 0.6
 THROTTLE_MIN = 0.1
 THROTTLE_MAX = 1.0
 THROTTLE_STEP = 0.05
@@ -144,6 +144,7 @@ class GameTrainingEnv:
         # Contact detection
         self.left_leg_contact = False
         self.right_leg_contact = False
+        self.contact_light = False  # Contact probes touched surface (cuts engine, like real Apollo)
 
         # Engine state
         self.fuel = FUEL_MAX
@@ -236,6 +237,7 @@ class GameTrainingEnv:
         self.prev_energy = None
         self.left_leg_contact = False
         self.right_leg_contact = False
+        self.contact_light = False
 
         # Angle tracking
         self.prev_raw_angle = initial_angle
@@ -262,6 +264,14 @@ class GameTrainingEnv:
         # Step physics with GAME solver iterations (10, 10)
         self.world.Step(TIME_STEP, SOLVER_VELOCITY_ITERATIONS, SOLVER_POSITION_ITERATIONS)
         self.steps += 1
+
+        # Contact probe check: cuts throttle to 0 on surface contact, like real Apollo
+        if not self.contact_light and not (self.left_leg_contact or self.right_leg_contact):
+            if check_contact_probes(self.lander.descent_stage,
+                                    lambda x: get_terrain_height_at(x, self.terrain_pts),
+                                    WORLD_WIDTH):
+                self.contact_light = True
+                self.throttle = 0.0
 
         obs = self._get_observation()
         terminated, truncated, landing_status = self._check_termination()
@@ -409,13 +419,13 @@ class GameTrainingEnv:
         return np.array([
             rel_x, rel_y, vel_x, vel_y, normalized_angle,
             -angular_vel,
-            1.0 if self.left_leg_contact else 0.0,
-            1.0 if self.right_leg_contact else 0.0,
+            0.0,  # left leg contact: always 0.0 to match game (no contact listener in game)
+            0.0,  # right leg contact: always 0.0 to match game
             self.throttle,
         ], dtype=np.float32)
 
     def _check_termination(self):
-        """Check if episode should end. Identical to ApolloLanderEnv._check_termination."""
+        """Check if episode should end. Mirrors apollolandergame_with_ai.py exactly."""
         if self.lander is None:
             return True, False, 'crashed'
 
@@ -428,19 +438,30 @@ class GameTrainingEnv:
         terrain_height = get_terrain_height_at(pos.x, self.terrain_pts)
         altitude = pos.y - terrain_height
 
-        legs_touching = self.left_leg_contact or self.right_leg_contact
-        is_very_close = altitude < 2.0
+        on_target_pad = is_point_on_pad(pos.x, pos.y, self.target_pad, tolerance_x=2.5, tolerance_y=3.0)
 
-        if legs_touching or (is_very_close and abs(vel.y) < 0.5):
-            speed = math.sqrt(vel.x**2 + vel.y**2)
-            if speed < 2.0 and abs(angle_deg) < 20:
+        # Mirror game: ground detection at 3.5m (not 2.0m)
+        is_on_ground = altitude < 3.5
+        # Mirror game: nearly stopped requires both axes < 1.0 m/s
+        is_nearly_stopped = abs(vel.y) < 1.0 and abs(vel.x) < 1.0
+
+        if is_on_ground and is_nearly_stopped:
+            # Mirror game: success = on target AND angle < 20°
+            if on_target_pad and abs(angle_deg) < 20:
                 return True, False, 'landed'
-            elif speed > 4.0 or abs(angle_deg) > 35:
+            # Mirror game: bad angle (> 30°) = crash
+            elif abs(angle_deg) > 30:
                 return True, False, 'crashed'
-            elif speed < 3.0 and abs(angle_deg) < 30:
+            # Mirror game: wrong pad but angle < 20° = landed (off-target)
+            elif not on_target_pad and abs(angle_deg) < 20:
                 return True, False, 'landed'
+            # Mirror game: 20-30° angle range = crash
             else:
                 return True, False, 'crashed'
+
+        # Mirror game: high-speed ground impact = crash
+        if is_on_ground and (abs(vel.y) > 3.0 or abs(vel.x) > 3.0):
+            return True, False, 'crashed'
 
         if pos.y < -10:
             return True, False, 'crashed'
@@ -774,13 +795,13 @@ class CurriculumGameEnv:
         # Stage-specific parameters
         self.stage_configs = {
             1: {
-                'max_angle': np.pi/4,
+                'max_angle': np.pi/2,
                 'max_steps': 1500,
-                'success_angle': 0.26,          # ~15 degrees
+                'success_angle': 0.14,          # ~8 degrees
                 'success_angular_vel': 0.3,
                 'success_vel_y': 1.5,
                 'success_reward': 200.0,
-                'graduation_threshold': 80.0,
+                'graduation_threshold': 95.0,
                 'min_episodes': 200,
                 'sustained_steps': 50,
             },
@@ -837,11 +858,6 @@ class CurriculumGameEnv:
                 descent.position.x + new_offset_x,
                 descent.position.y + new_offset_y
             )
-
-            descent.angularVelocity = 0.0
-            ascent.angularVelocity = 0.0
-            descent.linearVelocity = (0, 0)
-            ascent.linearVelocity = (0, 0)
 
             self.env.cumulative_angle = -initial_angle
             self.env.prev_raw_angle = initial_angle

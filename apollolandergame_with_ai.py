@@ -110,6 +110,7 @@ TERRAIN_DIFFICULTY = 1
 ENSEMBLE_SEEDS = None  # None = single agent mode, list of odd N >= 3 = ensemble mode
 AUTO_EPISODES = 0  # 0 = normal interactive mode, >0 = auto-restart for N episodes
 CRASH_LOG_DIR = "crash_logs"
+QTY_LOG_DIR = "qty_logs"
 argv = sys.argv[1:]
 i = 0
 while i < len(argv):
@@ -387,7 +388,7 @@ def lander_state_to_gym_state(lander, target_x, target_y, descent_throttle, game
     return state
 
 def _log_episode(ep, total, game_state, lander, descent_fuel, max_descent_fuel,
-                  target_pad, steps, is_point_on_pad_fn):
+                  target_pad, steps, is_point_on_pad_fn, qty_triggered=False):
     """Log a single episode result. Returns a dict for summary aggregation."""
     pos = lander.descent_stage.position
     vel = lander.descent_stage.linearVelocity
@@ -416,6 +417,7 @@ def _log_episode(ep, total, game_state, lander, descent_fuel, max_descent_fuel,
         "dist_x": dist_x,
         "fuel_pct": fuel_pct,
         "steps": steps,
+        "qty_triggered": qty_triggered,
     }
 
 
@@ -425,6 +427,7 @@ def _print_summary(results, ensemble_seeds):
     landed = [r for r in results if r["status"] != "CRASHED"]
     on_target = [r for r in results if r["status"] == "ON-TARGET"]
     crashed = [r for r in results if r["status"] == "CRASHED"]
+    qty_episodes = sum(1 for r in results if r.get("qty_triggered", False))
 
     print("\n" + "=" * 70)
     if ensemble_seeds:
@@ -437,6 +440,7 @@ def _print_summary(results, ensemble_seeds):
     print(f"  On target:   {len(on_target)} ({100.0 * len(on_target) / total:.1f}%)")
     print(f"  Off target:  {len(landed) - len(on_target)}")
     print(f"Crashed:       {len(crashed)} ({100.0 * len(crashed) / total:.1f}%)")
+    print(f"Qty light:     {qty_episodes} ({100.0 * qty_episodes / total:.1f}%)")
 
     if landed:
         speeds = [r["speed"] for r in landed]
@@ -532,6 +536,63 @@ def _dump_crash_log(episode_num, ensemble_seeds, initial_conditions, flight_data
     with open(filepath, "w") as f:
         json.dump(log_data, f, indent=2)
     print(f"  >> Crash log saved: {filepath}")
+
+
+def _dump_qty_log(episode_num, ensemble_seeds, initial_conditions, flight_data,
+                  lander, terrain_pts, target_pad,
+                  fuel_units, oxidizer_units, max_fuel_units, max_oxid_units, step):
+    """Save quantity-warning diagnostics to a JSON file."""
+    os.makedirs(QTY_LOG_DIR, exist_ok=True)
+
+    pos = lander.descent_stage.position
+    vel = lander.descent_stage.linearVelocity
+    angle_deg = math.degrees(lander.descent_stage.angle)
+    terrain_h = get_terrain_height_at(pos.x, terrain_pts)
+    altitude = pos.y - terrain_h
+    pad_cx = (target_pad["x1"] + target_pad["x2"]) / 2.0
+
+    fuel_pct  = round(fuel_units     / max_fuel_units  * 100, 1) if max_fuel_units  > 0 else 0
+    oxid_pct  = round(oxidizer_units / max_oxid_units  * 100, 1) if max_oxid_units  > 0 else 0
+
+    log_data = {
+        "episode": episode_num,
+        "ensemble_seeds": ensemble_seeds,
+        "initial_conditions": initial_conditions,
+        "target_pad": {
+            "x1": target_pad["x1"],
+            "x2": target_pad["x2"],
+            "y": target_pad["y"],
+            "center_x": round(pad_cx, 3),
+        },
+        "state_at_qty_trigger": {
+            "step": step,
+            "pos_x": round(pos.x, 3),
+            "pos_y": round(pos.y, 3),
+            "vel_x": round(vel.x, 3),
+            "vel_y": round(vel.y, 3),
+            "angle_deg": round(angle_deg, 2),
+            "altitude": round(altitude, 3),
+            "dist_to_pad": round(pos.x - pad_cx, 3),
+            "fuel_units": round(fuel_units, 3),
+            "fuel_pct": fuel_pct,
+            "fuel_lbs": round(fuel_units * 220.462, 1),
+            "oxidizer_units": round(oxidizer_units, 3),
+            "oxidizer_pct": oxid_pct,
+            "oxidizer_lbs": round(oxidizer_units * 220.462, 1),
+        },
+        "flight_data_to_trigger": flight_data,
+    }
+
+    if ensemble_seeds:
+        seeds_str = "_".join(str(s) for s in ensemble_seeds)
+        filename = f"qty_ep{episode_num:04d}_ensemble_{seeds_str}.json"
+    else:
+        filename = f"qty_ep{episode_num:04d}_single.json"
+
+    filepath = os.path.join(QTY_LOG_DIR, filename)
+    with open(filepath, "w") as f:
+        json.dump(log_data, f, indent=2)
+    print(f"  >> Qty warning log saved: {filepath}")
 
 
 # -------------------------------------------------
@@ -744,12 +805,12 @@ def main():
         csm = None  # CSM disabled for now
         csm_fuel = 0.0
 
-        # Quadruple the fuel for better gameplay (4x real Apollo)
+        # Terminal descent fuel budget (~3x real Apollo = represents fuel remaining at ~150m altitude)
         # Separate tanks for fuel (Aerozine 50) and oxidizer (N2O4)
-        fuel_multiplier = 4.0  # 4x real Apollo for gameplay
-        descent_fuel_units = MAX_DESCENT_FUEL_UNITS * fuel_multiplier     # ~126.56 units
-        descent_oxidizer_units = MAX_DESCENT_OXIDIZER_UNITS * fuel_multiplier  # ~203.36 units
-        max_descent_fuel = (MAX_DESCENT_FUEL_UNITS + MAX_DESCENT_OXIDIZER_UNITS) * fuel_multiplier  # ~329.92 total
+        fuel_multiplier = 3.03  # ~250 units total, matching training env terminal descent budget
+        descent_fuel_units = MAX_DESCENT_FUEL_UNITS * fuel_multiplier     # ~95.97 units
+        descent_oxidizer_units = MAX_DESCENT_OXIDIZER_UNITS * fuel_multiplier  # ~154.05 units
+        max_descent_fuel = (MAX_DESCENT_FUEL_UNITS + MAX_DESCENT_OXIDIZER_UNITS) * fuel_multiplier  # ~250.02 total
         descent_fuel = descent_fuel_units + descent_oxidizer_units  # Legacy total
 
         ascent_fuel = 800.0
@@ -773,7 +834,9 @@ def main():
     auto_restart_delay = 0  # frames to wait before auto-restart
     episode_flight_data = []  # per-step flight recorder (dumped on crash only)
     episode_initial_conditions = {}  # captured at episode start
-    crash_log_count = 0  # number of crash logs saved
+    crash_log_count = 0       # number of crash logs saved
+    qty_log_count = 0         # number of qty warning logs saved
+    episode_qty_triggered = False  # whether qty_warning triggered this episode
 
     def _capture_initial_conditions():
         """Snapshot initial conditions for crash diagnostics."""
@@ -816,7 +879,8 @@ def main():
                     crash_log_count += 1
                 result = _log_episode(episode_num, AUTO_EPISODES, game_state, lander,
                                       descent_fuel, max_descent_fuel, target_pad,
-                                      episode_step, is_point_on_pad)
+                                      episode_step, is_point_on_pad,
+                                      qty_triggered=episode_qty_triggered)
                 episode_results.append(result)
                 auto_restart_delay = 30  # half-second pause to see result
 
@@ -828,12 +892,15 @@ def main():
                     _print_summary(episode_results, ENSEMBLE_SEEDS)
                     if crash_log_count > 0:
                         print(f"\nCrash logs saved: {crash_log_count} files in {CRASH_LOG_DIR}/")
+                    if qty_log_count > 0:
+                        print(f"Qty warning logs: {qty_log_count} files in {QTY_LOG_DIR}/")
                     running = False
                     continue
                 new_game()
                 episode_step = 0
                 episode_logged = False
                 episode_flight_data = []
+                episode_qty_triggered = False
                 episode_initial_conditions = _capture_initial_conditions()
                 game_state.ai_enabled = True
                 print(f"\n--- Auto-run: Episode {episode_num}/{AUTO_EPISODES} ---")
@@ -944,6 +1011,18 @@ def main():
                     "vote": game_state.ai_vote_agreement,
                     "dist_to_pad": round(_pos.x - _pad_cx, 3),
                 })
+
+            # Quantity warning detection — log first trigger per episode
+            if AUTO_EPISODES > 0 and not episode_qty_triggered:
+                _fuel_r = descent_fuel_units / MAX_DESCENT_FUEL_UNITS if MAX_DESCENT_FUEL_UNITS > 0 else 0
+                _oxid_r = descent_oxidizer_units / MAX_DESCENT_OXIDIZER_UNITS if MAX_DESCENT_OXIDIZER_UNITS > 0 else 0
+                if _fuel_r <= 0.05 or _oxid_r <= 0.05:
+                    episode_qty_triggered = True
+                    qty_log_count += 1
+                    _dump_qty_log(episode_num, ENSEMBLE_SEEDS, episode_initial_conditions,
+                                  list(episode_flight_data), lander, terrain_pts, target_pad,
+                                  descent_fuel_units, descent_oxidizer_units,
+                                  MAX_DESCENT_FUEL_UNITS, MAX_DESCENT_OXIDIZER_UNITS, episode_step)
 
             # Engine is ALWAYS ON at current throttle (matches training env)
             main_thrust = True
@@ -1610,7 +1689,7 @@ def main():
             hud.draw_throttle_gauge(screen, INST_X, P_ENG_Y + 4, descent_throttle)
 
             # Propellant gauges (right of throttle)
-            fuel_mult = 4.0
+            fuel_mult = 3.03
             max_fuel_display = MAX_DESCENT_FUEL_UNITS * fuel_mult
             max_oxidizer_display = MAX_DESCENT_OXIDIZER_UNITS * fuel_mult
             hud.draw_propellant_gauges(

@@ -1,0 +1,32 @@
+{
+  "seed": 2718,
+  "total_time_minutes": 297.68807619015377,
+  "physics": "game_identical_10_10",
+  "curriculum": "3_stage_lateral_rcs",
+  "results": [
+    {
+      "stage": 1,
+      "seed": 2718,
+      "episodes": 341,
+      "final_success_rate": 95.0,
+      "best_success_rate": 95.0,
+      "train_time": 811.0643584728241
+    },
+    {
+      "stage": 2,
+      "seed": 2718,
+      "episodes": 1000,
+      "final_success_rate": 91.0,
+      "best_success_rate": 99.0,
+      "train_time": 6815.412319421768
+    },
+    {
+      "stage": 3,
+      "seed": 2718,
+      "episodes": 1500,
+      "final_success_rate": 93.0,
+      "best_success_rate": 100.0,
+      "train_time": 10233.122973918915
+    }
+  ]
+}

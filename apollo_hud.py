@@ -412,6 +412,7 @@ class ApolloHUD:
 
         # --- Scale markings ---
         font_scale = pygame.font.SysFont("consolas", 9)
+        font_lbs = pygame.font.SysFont("consolas", 8)
         for pct in range(0, 101, 10):
             frac = pct / 100.0
             tick_y = int(scale_bottom - frac * scale_height)
@@ -437,14 +438,17 @@ class ApolloHUD:
                              (oxid_col_x + col_width - 3, tick_y),
                              (oxid_col_x + col_width - 3 - tick_len, tick_y), 1)
 
-            # Numbers at major ticks (drawn in the center gap area)
-            if is_major:
-                num_text = font_scale.render(str(pct), True, (200, 200, 200))
-                num_rect = num_text.get_rect(centerx=center_x,
-                                             centery=tick_y)
-                # Only draw number if it fits and doesn't overlap labels
-                if tick_y > scale_top + 4 and tick_y < scale_bottom - 2:
-                    surface.blit(num_text, num_rect)
+            # Lb values at major ticks — fuel right-aligned near center, oxid left-aligned near center
+            if is_major and tick_y > scale_top + 4 and tick_y < scale_bottom - 2:
+                fuel_lbs_val = int(max_fuel_kg * frac * 220.462)
+                fuel_surf = font_lbs.render(str(fuel_lbs_val), True, (150, 195, 150))
+                surface.blit(fuel_surf,
+                             fuel_surf.get_rect(right=center_x - 8, centery=tick_y))
+
+                oxid_lbs_val = int(max_oxidizer_kg * frac * 220.462)
+                oxid_surf = font_lbs.render(str(oxid_lbs_val), True, (150, 195, 150))
+                surface.blit(oxid_surf,
+                             oxid_surf.get_rect(left=center_x + 9, centery=tick_y))
 
         # --- Needle indicators ---
         fuel_ratio = max(0.0, min(1.0, fuel_kg / max_fuel_kg)) if max_fuel_kg > 0 else 0.0
@@ -473,6 +477,7 @@ class ApolloHUD:
                 (needle_left - 2, needle_y + 3),
                 (needle_left + 2, needle_y),
             ])
+
 
     def draw_range_rate_gauge(self, surface, x, y, altitude, vertical_velocity,
                               max_alt=500.0, max_vel=30.0, width=100, height=170):

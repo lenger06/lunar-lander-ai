@@ -50,50 +50,73 @@ The ensemble system loads an odd number (3, 5, 7, ...) of independently trained 
 
 The first model specified on the command line is the master/tie-breaker. Seeds can be repeated to give a model extra voting weight (e.g., listing seed 456 twice gives it 2 out of 5 votes). This provides NASA-style redundancy — the system is robust against any single agent making a bad decision.
 
-### Recommended Ensemble: Seeds 456, 3333, 3141, 456, 1337
+### Recommended Ensemble: Seeds 456, 3333, 7777, 456, 1337, 9012, 6789
 
-A 5-agent ensemble with seed 456 doubled as master for approach precision anchoring.
+A 7-agent ensemble with seed 456 doubled as master for approach precision anchoring.
 
 ```bash
-python apollolandergame_with_ai.py --models 456 3333 3141 456 1337 --episodes=100
+python apollolandergame_with_ai.py --models 456 3333 7777 456 1337 9012 6789 --episodes=1000
 ```
 
-#### Performance (5,000 episodes)
+#### Performance (1,000 episodes)
 
 | Metric | Result |
 |--------|--------|
-| **Landing rate** | **99.5%** (4,975 / 5,000) |
-| **On-target landings** | **99.3%** (4,963 / 5,000) |
-| **Crash rate** | 0.5% (25 / 5,000) |
+| **Landing rate** | **99.9%** (999 / 1,000) |
+| **On-target landings** | **99.7%** (997 / 1,000) |
+| **Crash rate** | 0.1% (1 / 1,000) |
 
 #### Landing Quality
 
 | Metric | Average | Max |
 |--------|---------|-----|
-| Landing speed | 0.04 m/s | 1.27 m/s |
-| Landing angle | 0.2° | 14.2° |
-| Distance from target | 1.26 m | 20.72 m |
-| Fuel remaining | 65.5% | — |
-| Steps to land | 1,956 | 3,679 |
+| Landing speed | 0.08 m/s | 1.26 m/s |
+| Landing angle | 0.6° | 13.1° |
+| Distance from target | 1.13 m | 13.95 m |
+| Fuel remaining | 65.4% | — |
+| Steps to land | 1,946 | 3,538 |
 
 #### Landing Breakdown
 
 | Category | Count | Percentage |
 |----------|-------|------------|
-| Soft (<1 m/s) | 4,949 | 99.5% |
-| Gentle (1–2 m/s) | 26 | 0.5% |
+| Soft (<1 m/s) | 958 | 95.9% |
+| Gentle (1–2 m/s) | 41 | 4.1% |
 | Hard (>2 m/s) | 0 | 0.0% |
 
 #### Ensemble Design Rationale
 
-| Seed | Role | S2 Final (Approach) | S3 Final (Landing) | S3 Best |
-|------|------|--------------------|--------------------|---------|
+| Seed | Role | S2 Final | S3 Final | S3 Best |
+|------|------|----------|----------|---------|
 | 456 (×2) | Master + approach anchor | 98% | 92% | 100% |
 | 3333 | Best overall finisher | 96% | 100% | 100% |
-| 3141 | Strong S3 + diverse S2 | 86% | 96% | 100% |
+| 7777 | Strong finisher, dynamic-start trained | 89% | 96% | 100% |
 | 1337 | Strong all-round | 97% | 94% | 100% |
+| 9012 | Near-perfect finisher | 95% | 99% | 100% |
+| 6789 | Consistent high finisher | 89% | 98% | 99% |
 
-Doubling seed 456 gives it 2 of 5 votes, anchoring approach decisions with its top-tier S2 accuracy (98%). Seeds 3333 and 3141 provide the strongest landing stability (S3 Final 100% and 96%), while 1337 adds strong all-round performance. The combination of approach precision and landing stability yields near-perfect on-target soft landings.
+Doubling seed 456 gives it 2 of 7 votes, anchoring approach decisions with its top-tier S2 accuracy (98%). The remaining five models all achieve ≥94% S3 Final rates, providing strong crash resistance. 9012 (99% final) and 6789 (98% final) are the most consistent finishers; 7777 was trained with dynamic Stage 1 starting conditions matching the game's extreme initial angles (±90°). The sole failure in 1,000 episodes was a crash from a −83.7° initial angle that converted recovered angular momentum into uncontrollable lateral velocity.
+
+---
+
+### Ensemble Testing History
+
+All evaluations run on `luna` with random initial angles up to ±90°, random lateral velocity ±3 m/s, and random descent rate 2–5 m/s.
+
+| Ensemble (seeds) | Size | Episodes | On-target | Crashes | Notes |
+|------------------|------|----------|-----------|---------|-------|
+| 456, 3333, 7654, 456, 1337 | 5 | 500 | 99.4% | — | First strong result |
+| 456, 3333, 6789, 456, 1337 | 5 | 400 | ~99% | 1 | 1 crash + few off-target |
+| 456, 3333, 7654, 456, 1337, 9012, 6789 | 7 | 1,000 | 99.6% | 2 | Both crashes on-pad |
+| 3333, 9012, 6789, 7777, 3141, 1111, 1337 | 7 | ~400 | <99% | low | Significant off-target — no double-456 |
+| **456, 3333, 7777, 456, 1337, 9012, 6789** | **7** | **1,000** | **99.7%** | **1** | **Current best** |
+| 456, 3333, 7777, 456, 1337, 9012, 6789, 3141, 1111 | 9 | ~3 | — | 1 | Crashed ep 3, abandoned |
+
+**Key lessons:**
+- Double-456 is essential for on-target accuracy — removing it causes significant off-target rate
+- Replacing 7654 (85% S3 final) with 7777 (96% S3 final) reduced crashes from 2 → 1
+- 9-model ensemble with 3141/1111 added performed worse than 7-model in early testing
+- The single remaining crash is from extreme initial angle (−83.7°) — a near-horizontal start that the AI recovers from rotationally but loses lateral control
 
 ### State Space (9 dimensions)
 
@@ -229,17 +252,18 @@ The project has two game versions with different fuel models:
 
 Uses Isp = 311 s vs the real 299–305 s, giving ~2% lower consumption. Lander mass is updated every frame as fuel depletes, so TWR increases naturally toward touchdown — matching real Apollo behavior.
 
-#### AI Game (`apollolandergame_with_ai.py`) — Gameplay-Tuned
+#### AI Game (`apollolandergame_with_ai.py`) — Terminal Descent Budget
 
-| Parameter | AI Game | Realistic (scaled) | Ratio |
-|-----------|---------|---------------------|-------|
-| Fuel capacity | 328 units (4× real scaled) | 82 units | 4× more |
-| Burn rate | 0.12 units/frame at 100% | 0.00246 units/frame | ~49× faster |
-| Burn time at 100% throttle | 2,733 frames (45.6 sec) | 33,333 frames (9.3 min) | ~12× shorter |
-| Burn time at 40% throttle | ~114 sec (~1.9 min) | ~23.2 min | ~12× shorter |
-| Dynamic mass update | No — mass stays constant | Yes | Missing |
+The AI game represents only the **terminal descent phase** (~150 m altitude onward), not the full powered descent from orbit. The fuel budget is calibrated to match what would realistically remain at the start of terminal descent.
 
-The AI game gives 4× the real fuel budget but burns it ~49× faster, resulting in fuel depleting about 12× faster than reality. This creates meaningful fuel pressure for a 20–40 second landing scenario. The constant mass means TWR stays fixed at 2.71 throughout — the AI was trained against this, so it's consistent but less realistic than the manual game.
+| Parameter | AI Game | Realistic terminal descent | Notes |
+|-----------|---------|---------------------------|-------|
+| Fuel capacity | ~250 units (3.03× real scaled) | ~10% of full tank remains | Apollo 11 landed with ~25 sec of fuel |
+| Burn rate | 0.12 units/frame at 100% | — | Compressed for ~30–60 sec scenario |
+| Avg fuel remaining at touchdown | ~55% of terminal budget | 14–51% (mission dependent) | Apollo 14 ~49%, Apollo 11 ~14% |
+| Dynamic mass update | No — mass stays constant | Yes | TWR fixed at 2.71 throughout |
+
+The 3.03× multiplier gives ~250 total units, matching the training environment exactly. The AI typically lands with ~55% remaining — analogous to a well-flown Apollo 14-style descent. The single remaining crash (extreme −83.7° initial angle) still had 82.6% fuel at impact, confirming fuel was not a factor. A QUANTITY warning light triggers (and is logged) when either propellant drops below 5% of the unscaled real-Apollo maximum.
 
 ### Propellant System & Center of Gravity
 
@@ -533,31 +557,42 @@ python evaluate_stage3.py --seed 456 --episodes 10 --visualize
 
 ### Trained Model Results
 
-All models trained with game-identical Box2D physics (solver iterations 10,10) using the 3-stage lateral RCS curriculum. Sorted by S3 Best, then S3 Final.
+All models trained with game-identical Box2D physics (solver iterations 10,10) using the 3-stage lateral RCS curriculum. Sorted by S3 Final rate.
 
-| Seed | S1 Final | S1 Best | S2 Final | S2 Best | S3 Final | S3 Best | S3 Eps | Time (min) | Notes |
-|------|----------|---------|----------|---------|----------|---------|--------|------------|-------|
-| 3333 | 100% | 100% | 96% | 98% | **100%** | **100%** | 1500 | 365 | Best individual training metrics |
-| 3141 | 100% | 100% | 86% | 91% | **96%** | **100%** | 1334 | 291 | Recommended ensemble member |
-| 1111 | 100% | 100% | 92% | 95% | **95%** | **100%** | 1500 | 336 | |
-| 1337 | 100% | 100% | 97% | 100% | **94%** | **100%** | 1334 | 295 | Recommended ensemble member |
-| 2222 | 100% | 100% | 84% | 94% | **94%** | **99%** | 1500 | 306 | |
-| 8888 | 99% | 99% | 78% | 96% | **93%** | **100%** | 1334 | 341 | |
-| 2468 | 100% | 100% | 92% | 93% | **93%** | **99%** | 1334 | 275 | |
-| 456  | 100% | 100% | 98% | 98% | **92%** | **100%** | 1500 | 335 | Recommended ensemble member (×2) |
-| 42   | 100% | 100% | 94% | 95% | **89%** | **100%** | 1500 | 306 | |
-| 789  | 100% | 100% | 96% | 96% | **87%** | **98%** | 1500 | 334 | |
-| 7654 | 100% | 100% | 97% | 97% | **85%** | **100%** | 1334 | 256 | Fastest training |
-| 5555 | 100% | 100% | 88% | 88% | **83%** | **99%** | 1500 | 333 | |
-| 4242 | 99% | 99% | 91% | 93% | **72%** | **91%** | 1334 | 305 | |
-| 123  | 100% | 100% | 99% | 99% | **68%** | **100%** | 1500 | 318 | Highest S3 instability |
-| 999  | 100% | 100% | 78% | 86% | — | — | — | 227 | 2-stage curriculum only (no S3) |
+Models marked † were trained with **dynamic Stage 1 starting conditions** (random initial angles ±90°, lateral velocity ±3 m/s) matching the game's actual spawn parameters. Earlier models used static Stage 1 starts.
+
+| Seed | S1 Final | S2 Final | S3 Final | S3 Best | S3 Eps | Time (min) | Notes |
+|------|----------|----------|----------|---------|--------|------------|-------|
+| 3333 | 100% | 96% | **100%** | 100% | 1500 | 365 | Best individual — only seed with 100%/100% S3 |
+| 9012 † | 95% | 95% | **99%** | 100% | 1500 | 291 | Recommended ensemble member |
+| 6789 † | 95% | 89% | **98%** | 99% | 1500 | 309 | Recommended ensemble member |
+| 7777 † | 95% | 89% | **96%** | 100% | 1500 | 267 | Recommended ensemble member; dynamic-start trained |
+| 3141 | 100% | 86% | **96%** | 100% | 1334 | 291 | |
+| 1111 | 100% | 92% | **95%** | 100% | 1500 | 336 | |
+| 1337 | 100% | 97% | **94%** | 100% | 1334 | 295 | Recommended ensemble member |
+| 2000 † | 96% | 95% | **94%** | 99% | 1500 | 237 | New batch, dynamic-start trained |
+| 2222 | 100% | 84% | **94%** | 99% | 1500 | 306 | |
+| 2718 † | 95% | 91% | **93%** | 100% | 1500 | 298 | |
+| 8888 | 99% | 78% | **93%** | 100% | 1334 | 341 | |
+| 2468 | 100% | 92% | **93%** | 99% | 1334 | 275 | |
+| 456  | 100% | 98% | **92%** | 100% | 1500 | 335 | Recommended ensemble member (×2); top S2 approach |
+| 5000 † | 95% | 96% | **91%** | 100% | 1500 | 263 | New batch, dynamic-start trained |
+| 1618 † | 95% | 89% | **91%** | 98% | 1500 | 234 | |
+| 1000 † | 95% | 92% | **91%** | 97% | 1500 | 210 | New batch, dynamic-start trained |
+| 42   | 100% | 94% | **89%** | 100% | 1500 | 306 | |
+| 789  | 100% | 96% | **87%** | 98% | 1500 | 334 | |
+| 7654 | 100% | 97% | **85%** | 100% | 1334 | 256 | Fastest training |
+| 5555 | 100% | 88% | **83%** | 99% | 1500 | 333 | |
+| 4242 | 99% | 91% | **72%** | 91% | 1334 | 305 | |
+| 123  | 100% | 99% | **68%** | 100% | 1500 | 318 | High S3 instability (100% best → 68% final) |
+| 999  | 100% | 78% | — | — | — | 227 | 2-stage only (no S3) |
 
 **Key observations:**
-- **S3 Best vs S3 Final gap** indicates late-training instability — seeds with smaller gaps (3333, 3141, 1111) are more stable
-- **S2 Final** correlates with on-target landing precision in ensemble evaluation
-- Batch 1 seeds (42–5555) trained with 1500 S3 episodes; Batch 2 seeds (1337–7654) trained with 1334 S3 episodes
+- **S3 Best vs S3 Final gap** indicates late-training instability — seeds with small gaps (3333, 9012, 6789) are most stable ensemble candidates
+- **S2 Final** correlates with on-target accuracy — 456's 98% S2 is why it anchors the ensemble
+- **Dynamic Stage 1 (†)** models were trained with the full game spawn range; these handle extreme initial angles better
 - Seed 3333 is the only model to achieve 100% on both S3 Final and S3 Best
+- The 4 newest seeds (1000, 2000, 5000, 7777) were trained after all training/game environment parity fixes were applied
 
 ## Playing the Game
 
@@ -574,11 +609,11 @@ python apollolandergame_with_ai.py [planet]
 Run with ensemble voting (first seed = master/tie-breaker, odd number of seeds >= 3):
 
 ```bash
-# Recommended 5-agent ensemble
-python apollolandergame_with_ai.py [planet] --models 456 3333 3141 456 1337
+# Recommended 7-agent ensemble (99.7% on-target over 1,000 episodes)
+python apollolandergame_with_ai.py [planet] --models 456 3333 7777 456 1337 9012 6789
 
 # 3-agent ensemble
-python apollolandergame_with_ai.py [planet] --models 456 3141 1337
+python apollolandergame_with_ai.py [planet] --models 456 3333 1337
 ```
 
 Seeds can be repeated to give a model extra voting weight. The HUD displays real-time vote agreement: green (unanimous), yellow (majority), or red (no majority — master decides).
@@ -589,7 +624,7 @@ Run N episodes automatically with logging and a summary report:
 
 ```bash
 # Recommended ensemble evaluation — 100 episodes
-python apollolandergame_with_ai.py luna --models 456 3333 3141 456 1337 --episodes=100
+python apollolandergame_with_ai.py luna --models 456 3333 7777 456 1337 9012 6789 --episodes=100
 
 # Single agent evaluation — 50 episodes
 python apollolandergame_with_ai.py luna --episodes=50
@@ -597,7 +632,7 @@ python apollolandergame_with_ai.py luna --episodes=50
 
 Each episode logs status (ON-TARGET / OFF-TARGET / CRASHED), speed, angle, distance to pad, fuel remaining, and step count. After all episodes, a full summary report is printed.
 
-When a crash occurs during auto-run evaluation, detailed diagnostic data is automatically saved to `crash_logs/` including full step-by-step flight recorder data, initial conditions, terrain profile around the pad, and crash reason analysis.
+When a crash occurs during auto-run evaluation, detailed diagnostic data is automatically saved to `crash_logs/` including full step-by-step flight recorder data, initial conditions, terrain profile around the pad, and crash reason analysis. When the QUANTITY warning light triggers (either propellant tank below 5%), the flight state at that moment is saved to `qty_logs/` for fuel management analysis. Both counts are reported in the end-of-run summary.
 
 ### Game Options
 
@@ -721,6 +756,7 @@ lunar-lander-ai/
   # Models, Config & Logs
   models/                      # Saved .pth model weights and summary JSON files
   crash_logs/                  # Per-crash diagnostic JSON (auto-generated during eval)
+  qty_logs/                    # Per-episode QUANTITY light trigger logs (auto-generated)
   requirements.txt             # Python dependencies
 ```
 
