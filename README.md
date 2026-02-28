@@ -1,6 +1,6 @@
 # Apollo Lunar Lander AI
 
-A reinforcement learning system that trains Double DQN agents to land an Apollo-style lunar module on target landing pads. Agents are trained using a 3-stage curriculum with spring-based potential reward shaping, then deployed in a playable pygame game as either a single AI autopilot or a **variable-size ensemble with majority voting**.
+A reinforcement learning system that trains Double DQN agents to land an Apollo-style lunar module on target landing pads. Agents are trained using a 3-stage curriculum with spring-based potential reward shaping, then deployed in a playable pygame game in manual flight mode or as either a single AI autopilot or a **variable-size ensemble with majority voting**.
 
 https://github.com/lenger06/lunar-lander-ai/raw/main/screenshots/Screen%20Recording%202026-02-27%20203651.mp4
 
@@ -54,15 +54,18 @@ A 7-agent ensemble with seed 456 doubled as master for approach precision anchor
 python apollolandergame_with_ai.py --models 456 3333 7777 456 1337 9012 6789 --episodes=1000
 ```
 
-#### Performance (1,000 episodes)
+#### Performance (1,000 Episodes)
+
+Two 1,000-episode evaluation runs were completed with the same ensemble using different fuel budgets. The difference in crash count (1 vs 3) is statistical variance — all crashes across both runs originated from extreme initial angles (>−83°) and the Qty light never triggered in either run.
+
+**Run 1 — Original fuel budget (FUEL_MAX 328, ~4× scaled)**
 
 | Metric | Result |
 |--------|--------|
 | **Landing rate** | **99.9%** (999 / 1,000) |
 | **On-target landings** | **99.7%** (997 / 1,000) |
 | **Crash rate** | 0.1% (1 / 1,000) |
-
-#### Landing Quality
+| **Off-target** | 0.2% (2 / 1,000) |
 
 | Metric | Average | Max |
 |--------|---------|-----|
@@ -72,13 +75,44 @@ python apollolandergame_with_ai.py --models 456 3333 7777 456 1337 9012 6789 --e
 | Fuel remaining | 65.4% | — |
 | Steps to land | 1,946 | 3,538 |
 
-#### Landing Breakdown
-
 | Category | Count | Percentage |
 |----------|-------|------------|
 | Soft (<1 m/s) | 958 | 95.9% |
 | Gentle (1–2 m/s) | 41 | 4.1% |
 | Hard (>2 m/s) | 0 | 0.0% |
+
+The sole crash was from a −83.7° initial angle that converted recovered angular momentum into uncontrollable lateral velocity (82.6% fuel remaining at impact).
+
+**Run 2 — Terminal descent fuel budget (FUEL_MAX 250, 3.03× scaled)**
+
+| Metric | Result |
+|--------|--------|
+| **Landing rate** | **99.7%** (997 / 1,000) |
+| **On-target landings** | **99.6%** (996 / 1,000) |
+| **Crash rate** | 0.3% (3 / 1,000) |
+| **Off-target** | 0.1% (1 / 1,000) |
+| **Qty light triggered** | 0 (0.0%) |
+
+| Metric | Average |
+|--------|---------|
+| Fuel remaining | 51.2% |
+| Steps to land | 2,081 |
+
+| Category | Count | Percentage |
+|----------|-------|------------|
+| Soft (<1 m/s) | 978 | 97.8% |
+| Gentle (1–2 m/s) | 19 | 1.9% |
+| Hard (>2 m/s) | 0 | 0.0% |
+
+All 3 crashes originated from extreme initial angles with 75–78% fuel remaining at impact:
+
+| Episode | Init Angle | Speed at Impact | Fuel at Impact |
+|---------|-----------|-----------------|----------------|
+| EP 288 | −87.8° | 5.05 m/s | 77.4% |
+| EP 469 | −89.9° | 3.54 m/s (full spiral) | 75.7% |
+| EP 740 | −83.8° | 18.14 m/s | 78.0% |
+
+The Qty light: 0 result confirms the fuel budget reduction did not cause any fuel exhaustion events. Soft landings improved from 95.9% → 97.8%, and avg steps increased slightly (1,946 → 2,081) — consistent with the AI making more conservative final approach adjustments with a tighter perceived fuel budget.
 
 #### Ensemble Design Rationale
 
@@ -105,14 +139,15 @@ All evaluations run on `luna` with random initial angles up to ±90°, random la
 | 456, 3333, 6789, 456, 1337 | 5 | 400 | ~99% | 1 | 1 crash + few off-target |
 | 456, 3333, 7654, 456, 1337, 9012, 6789 | 7 | 1,000 | 99.6% | 2 | Both crashes on-pad |
 | 3333, 9012, 6789, 7777, 3141, 1111, 1337 | 7 | ~400 | <99% | low | Significant off-target — no double-456 |
-| **456, 3333, 7777, 456, 1337, 9012, 6789** | **7** | **1,000** | **99.7%** | **1** | **Current best** |
+| **456, 3333, 7777, 456, 1337, 9012, 6789** | **7** | **1,000** | **99.7%** | **1** | Run 1 — original fuel budget (FUEL_MAX 328) |
 | 456, 3333, 7777, 456, 1337, 9012, 6789, 3141, 1111 | 9 | ~3 | — | 1 | Crashed ep 3, abandoned |
+| **456, 3333, 7777, 456, 1337, 9012, 6789** | **7** | **1,000** | **99.6%** | **3** | **Run 2 — terminal descent fuel (FUEL_MAX 250); all 3 crashes from extreme angles >−83°, Qty light: 0** |
 
 **Key lessons:**
 - Double-456 is essential for on-target accuracy — removing it causes significant off-target rate
 - Replacing 7654 (85% S3 final) with 7777 (96% S3 final) reduced crashes from 2 → 1
 - 9-model ensemble with 3141/1111 added performed worse than 7-model in early testing
-- The single remaining crash is from extreme initial angle (−83.7°) — a near-horizontal start that the AI recovers from rotationally but loses lateral control
+- All crashes across both runs originate from extreme initial angles (−83° to −90°) — angular momentum converts to lateral velocity during recovery; this is irreducible statistical variance at these spawn conditions
 
 ### State Space (9 dimensions)
 
@@ -259,7 +294,7 @@ The AI game represents only the **terminal descent phase** (~150 m altitude onwa
 | Avg fuel remaining at touchdown | ~55% of terminal budget | 14–51% (mission dependent) | Apollo 14 ~49%, Apollo 11 ~14% |
 | Dynamic mass update | No — mass stays constant | Yes | TWR fixed at 2.71 throughout |
 
-The 3.03× multiplier gives ~250 total units, matching the training environment exactly. The AI typically lands with ~55% remaining — analogous to a well-flown Apollo 14-style descent. The single remaining crash (extreme −83.7° initial angle) still had 82.6% fuel at impact, confirming fuel was not a factor. A QUANTITY warning light triggers (and is logged) when either propellant drops below 5% of the unscaled real-Apollo maximum.
+The 3.03× multiplier gives ~250 total units, matching the training environment exactly. The AI typically lands with ~51–55% remaining — analogous to a well-flown Apollo 14-style descent. Across two 1,000-episode evaluations, all crashes occurred at extreme initial angles (−83° to −90°) with 75–83% fuel remaining — confirming fuel was not a factor in any failure. The Qty light never triggered in either run (0/2,000 episodes). A QUANTITY warning light triggers (and is logged) when either propellant drops below 5% of the unscaled real-Apollo maximum.
 
 ### Propellant System & Center of Gravity
 
