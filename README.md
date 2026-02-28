@@ -2,30 +2,26 @@
 
 A reinforcement learning system that trains Double DQN agents to land an Apollo-style lunar module on target landing pads. Agents are trained using a 3-stage curriculum with spring-based potential reward shaping, then deployed in a playable pygame game as either a single AI autopilot or a **variable-size ensemble with majority voting**.
 
-https://github.com/lenger06/lunar-lander-ai/raw/main/screenshots/landings3.mp4
+https://github.com/lenger06/lunar-lander-ai/raw/main/screenshots/Screen%20Recording%202026-02-27%20203651.mp4
 
 <p align="center">
-  <img src="screenshots/Lander5.png" width="49%" alt="AI ensemble autopilot approaching landing pad">
-  <img src="screenshots/LanderA.png" width="49%" alt="AI Autopilot Landing">
-</p>
-<p align="center">
-  <em>Left: AI ensemble autopilot with vote indicator &nbsp;|&nbsp; Right: AI Autopilot Landing</em>
+  <em>AI autopilot controlled flight and landings — 7-model ensemble (456, 3333, 7777, 456, 1337, 9012, 6789)</em>
 </p>
 
 <p align="center">
-  <img src="screenshots/landerC.png" width="49%" alt="Manual descent">
-  <img src="screenshots/LanderSputnik.png" width="49%" alt="Sputnik Satellite">
+  <img src="screenshots/Screenshot 2026-02-28 085855.png" width="49%" alt="Lander approach to pad">
+  <img src="screenshots/Screenshot 2026-02-28 090021.png" width="49%" alt="Final landing adjustments">
 </p>
 <p align="center">
-  <em>Left: Manual descent &nbsp;|&nbsp; Right: Sputnik Satellite</em>
+  <em>Left: Lander approach &nbsp;|&nbsp; Right: Final landing adjustments</em>
 </p>
 
 <p align="center">
-  <img src="screenshots/LanderContactA.png" width="49%" alt="Surface Contact Indicator">
-  <img src="screenshots/LanderFuelLow.png" width="49%" alt="Fuel Low Indicator">
+  <img src="screenshots/Screenshot 2026-02-28 090056.png" width="49%" alt="Near surface contact">
+  <img src="screenshots/Screenshot 2026-02-28 090326.png" width="49%" alt="Surface contact and automatic engine cut-off">
 </p>
 <p align="center">
-  <em>Left: Surface Contact Indicator &nbsp;|&nbsp; Right: Fuel Low Indicator</em>
+  <em>Left: Near surface contact &nbsp;|&nbsp; Right: Surface contact and automatic engine cut-off</em>
 </p>
 
 ## Architecture
